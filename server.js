@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
@@ -10,66 +12,84 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_THIS_SECRET";
 
-// MongoDB
-mongoose
-  .connect(process.env.MONGO_URL)
-  .then(() => console.log("MongoDB Connected"))
-  .catch((error) => console.error("MongoDB Error:", error.message));
+const JWT_SECRET = process.env.JWT_SECRET;
 
-// User model
-const User = mongoose.model(
-  "User",
-  new mongoose.Schema(
-    {
-      name: {
-        type: String,
-        required: true,
-        trim: true
-      },
-      email: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true,
-        trim: true
-      },
-      passwordHash: {
-        type: String,
-        required: true
-      },
-      role: {
-        type: String,
-        default: "user"
-      },
-      balance: {
-        type: Number,
-        default: 0
-      },
-      currency: {
-        type: String,
-        default: "USDT"
-      }
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!JWT_SECRET) {
+  console.error("ERROR: JWT_SECRET is missing");
+  process.exit(1);
+}
+
+if (!MONGODB_URI) {
+  console.error("ERROR: MONGODB_URI is missing");
+  process.exit(1);
+}
+
+/* =========================
+   USER MODEL
+========================= */
+
+const userSchema = new mongoose.Schema(
+  {
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true
     },
-    { timestamps: true }
-  )
+
+    passwordHash: {
+      type: String,
+      required: true
+    },
+
+    role: {
+      type: String,
+      enum: ["user", "admin"],
+      default: "user"
+    },
+
+    balance: {
+      type: Number,
+      default: 0
+    },
+
+    currency: {
+      type: String,
+      default: "USDT"
+    }
+  },
+  {
+    timestamps: true
+  }
 );
 
-// JWT
+const User = mongoose.model("User", userSchema);
+
+/* =========================
+   JWT
+========================= */
+
 function createToken(user) {
   return jwt.sign(
     {
       id: user._id.toString(),
-      email: user.email,
+      username: user.username,
       role: user.role
     },
     JWT_SECRET,
-    { expiresIn: "7d" }
+    {
+      expiresIn: "7d"
+    }
   );
 }
 
-// Authentication
+/* =========================
+   AUTH MIDDLEWARE
+========================= */
+
 function auth(req, res, next) {
   const header = req.headers.authorization;
 
@@ -80,11 +100,15 @@ function auth(req, res, next) {
     });
   }
 
+  const token = header.substring(7);
+
   try {
-    const token = header.split(" ")[1];
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    req.user = decoded;
+
     next();
-  } catch {
+  } catch (error) {
     return res.status(401).json({
       success: false,
       message: "Invalid or expired token"
@@ -92,28 +116,25 @@ function auth(req, res, next) {
   }
 }
 
-// Admin only
-async function adminOnly(req, res, next) {
-  try {
-    const user = await User.findById(req.user.id);
+/* =========================
+   ADMIN MIDDLEWARE
+========================= */
 
-    if (!user || user.role !== "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Admin access required"
-      });
-    }
-
-    next();
-  } catch {
-    res.status(500).json({
+function adminOnly(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({
       success: false,
-      message: "Server error"
+      message: "Admin access required"
     });
   }
+
+  next();
 }
 
-// Health check
+/* =========================
+   HEALTH CHECK
+========================= */
+
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -122,15 +143,29 @@ app.get("/", (req, res) => {
   });
 });
 
-// Register
+/* =========================
+   REGISTER
+========================= */
+
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const username = String(req.body.username || "")
+      .trim()
+      .toLowerCase();
 
-    if (!name || !email || !password) {
+    const password = String(req.body.password || "");
+
+    if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Name, email and password are required"
+        message: "Username and password are required"
+      });
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Username must contain at least 3 characters"
       });
     }
 
@@ -141,24 +176,21 @@ app.post("/api/auth/register", async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-
-    const existing = await User.findOne({
-      email: normalizedEmail
+    const existingUser = await User.findOne({
+      username
     });
 
-    if (existing) {
+    if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: "Email already registered"
+        message: "Username already registered"
       });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
     const user = await User.create({
-      name: name.trim(),
-      email: normalizedEmail,
+      username,
       passwordHash,
       role: "user",
       balance: 0,
@@ -167,46 +199,55 @@ app.post("/api/auth/register", async (req, res) => {
 
     const token = createToken(user);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Registration successful",
       token,
       user: {
         id: user._id,
-        name: user.name,
-        email: user.email,
+        username: user.username,
         role: user.role,
         balance: user.balance,
         currency: user.currency
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error("REGISTER ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Registration failed"
     });
   }
 });
 
-// Login
+/* =========================
+   LOGIN
+========================= */
+
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const username = String(req.body.username || "")
+      .trim()
+      .toLowerCase();
 
-    const normalizedEmail = String(email || "")
-      .toLowerCase()
-      .trim();
+    const password = String(req.body.password || "");
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Username and password are required"
+      });
+    }
 
     const user = await User.findOne({
-      email: normalizedEmail
+      username
     });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password"
+        message: "Invalid username or password"
       });
     }
 
@@ -218,39 +259,43 @@ app.post("/api/auth/login", async (req, res) => {
     if (!validPassword) {
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password"
+        message: "Invalid username or password"
       });
     }
 
     const token = createToken(user);
 
-    res.json({
+    return res.json({
       success: true,
       message: "Login successful",
       token,
       user: {
         id: user._id,
-        name: user.name,
-        email: user.email,
+        username: user.username,
         role: user.role,
         balance: user.balance,
         currency: user.currency
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error("LOGIN ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Login failed"
     });
   }
 });
 
-// Current user
+/* =========================
+   CURRENT USER
+========================= */
+
 app.get("/api/me", auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id).select(
+      "-passwordHash"
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -259,69 +304,76 @@ app.get("/api/me", auth, async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
       user: {
         id: user._id,
-        name: user.name,
-        email: user.email,
+        username: user.username,
         role: user.role,
         balance: user.balance,
         currency: user.currency
       }
     });
-  } catch {
-    res.status(500).json({
+  } catch (error) {
+    console.error("ME ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Server error"
+      message: "Could not load user"
     });
   }
 });
 
-// Admin: list users
+/* =========================
+   ADMIN - USERS
+========================= */
+
 app.get(
   "/api/admin/users",
   auth,
   adminOnly,
   async (req, res) => {
     try {
-      const users = await User.find().select(
-        "-passwordHash"
-      );
+      const users = await User.find()
+        .select("-passwordHash")
+        .sort({ createdAt: -1 });
 
-      res.json({
+      return res.json({
         success: true,
         users
       });
-    } catch {
-      res.status(500).json({
+    } catch (error) {
+      console.error("ADMIN USERS ERROR:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Failed to load users"
+        message: "Could not load users"
       });
     }
   }
 );
 
-// Admin: change balance
+/* =========================
+   ADMIN - UPDATE BALANCE
+========================= */
+
 app.post(
   "/api/admin/users/:id/balance",
   auth,
   adminOnly,
   async (req, res) => {
     try {
-      const numericAmount = Number(req.body.amount);
+      const amount = Number(req.body.amount);
 
-      if (!Number.isFinite(numericAmount)) {
+      if (!Number.isFinite(amount)) {
         return res.status(400).json({
           success: false,
           message: "Invalid amount"
         });
       }
 
-      const user = await User.findByIdAndUpdate(
-        req.params.id,
-        { balance: numericAmount },
-        { new: true }
+      const user = await User.findById(
+        req.params.id
       );
 
       if (!user) {
@@ -331,23 +383,61 @@ app.post(
         });
       }
 
-      res.json({
+      user.balance = amount;
+
+      await user.save();
+
+      return res.json({
         success: true,
         message: "Balance updated",
         balance: user.balance,
         currency: user.currency
       });
-    } catch {
-      res.status(500).json({
+    } catch (error) {
+      console.error("BALANCE ERROR:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Failed to update balance"
+        message: "Could not update balance"
       });
     }
   }
 );
 
-app.listen(PORT, () => {
-  console.log(
-    `Zonguru backend running on port ${PORT}`
-  );
+/* =========================
+   404
+========================= */
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "Route not found"
+  });
 });
+
+/* =========================
+   START SERVER
+========================= */
+
+async function startServer() {
+  try {
+    await mongoose.connect(MONGODB_URI);
+
+    console.log("MongoDB connected successfully");
+
+    app.listen(PORT, () => {
+      console.log(
+        `Zonguru backend running on port ${PORT}`
+      );
+    });
+  } catch (error) {
+    console.error(
+      "MongoDB connection failed:",
+      error.message
+    );
+
+    process.exit(1);
+  }
+}
+
+startServer();
