@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 
 const app = express();
 
@@ -11,14 +12,55 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_THIS_SECRET";
 
-// Demo in-memory database.
-// Later we will connect a real database.
-const users = [];
+// MongoDB
+mongoose
+  .connect(process.env.MONGO_URL)
+  .then(() => console.log("MongoDB Connected"))
+  .catch((error) => console.error("MongoDB Error:", error.message));
 
+// User model
+const User = mongoose.model(
+  "User",
+  new mongoose.Schema(
+    {
+      name: {
+        type: String,
+        required: true,
+        trim: true
+      },
+      email: {
+        type: String,
+        required: true,
+        unique: true,
+        lowercase: true,
+        trim: true
+      },
+      passwordHash: {
+        type: String,
+        required: true
+      },
+      role: {
+        type: String,
+        default: "user"
+      },
+      balance: {
+        type: Number,
+        default: 0
+      },
+      currency: {
+        type: String,
+        default: "USDT"
+      }
+    },
+    { timestamps: true }
+  )
+);
+
+// JWT
 function createToken(user) {
   return jwt.sign(
     {
-      id: user.id,
+      id: user._id.toString(),
       email: user.email,
       role: user.role
     },
@@ -27,6 +69,7 @@ function createToken(user) {
   );
 }
 
+// Authentication
 function auth(req, res, next) {
   const header = req.headers.authorization;
 
@@ -37,9 +80,8 @@ function auth(req, res, next) {
     });
   }
 
-  const token = header.split(" ")[1];
-
   try {
+    const token = header.split(" ")[1];
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
@@ -50,15 +92,25 @@ function auth(req, res, next) {
   }
 }
 
-function adminOnly(req, res, next) {
-  if (req.user.role !== "admin") {
-    return res.status(403).json({
+// Admin only
+async function adminOnly(req, res, next) {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Admin access required"
+      });
+    }
+
+    next();
+  } catch {
+    res.status(500).json({
       success: false,
-      message: "Admin access required"
+      message: "Server error"
     });
   }
-
-  next();
 }
 
 // Health check
@@ -91,9 +143,9 @@ app.post("/api/auth/register", async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    const existing = users.find(
-      (user) => user.email === normalizedEmail
-    );
+    const existing = await User.findOne({
+      email: normalizedEmail
+    });
 
     if (existing) {
       return res.status(409).json({
@@ -104,17 +156,14 @@ app.post("/api/auth/register", async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const user = {
-      id: String(Date.now()),
+    const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       passwordHash,
       role: "user",
       balance: 0,
       currency: "USDT"
-    };
-
-    users.push(user);
+    });
 
     const token = createToken(user);
 
@@ -123,7 +172,7 @@ app.post("/api/auth/register", async (req, res) => {
       message: "Registration successful",
       token,
       user: {
-        id: user.id,
+        id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -132,6 +181,8 @@ app.post("/api/auth/register", async (req, res) => {
       }
     });
   } catch (error) {
+    console.error(error);
+
     res.status(500).json({
       success: false,
       message: "Registration failed"
@@ -148,9 +199,9 @@ app.post("/api/auth/login", async (req, res) => {
       .toLowerCase()
       .trim();
 
-    const user = users.find(
-      (item) => item.email === normalizedEmail
-    );
+    const user = await User.findOne({
+      email: normalizedEmail
+    });
 
     if (!user) {
       return res.status(401).json({
@@ -178,7 +229,40 @@ app.post("/api/auth/login", async (req, res) => {
       message: "Login successful",
       token,
       user: {
-        id: user.id,
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        balance: user.balance,
+        currency: user.currency
+      }
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Login failed"
+    });
+  }
+});
+
+// Current user
+app.get("/api/me", auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -189,91 +273,81 @@ app.post("/api/auth/login", async (req, res) => {
   } catch {
     res.status(500).json({
       success: false,
-      message: "Login failed"
+      message: "Server error"
     });
   }
-});
-
-// Current user
-app.get("/api/me", auth, (req, res) => {
-  const user = users.find(
-    (item) => item.id === req.user.id
-  );
-
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: "User not found"
-    });
-  }
-
-  res.json({
-    success: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      balance: user.balance,
-      currency: user.currency
-    }
-  });
 });
 
 // Admin: list users
-app.get("/api/admin/users", auth, adminOnly, (req, res) => {
-  res.json({
-    success: true,
-    users: users.map((user) => ({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      balance: user.balance,
-      currency: user.currency
-    }))
-  });
-});
+app.get(
+  "/api/admin/users",
+  auth,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const users = await User.find().select(
+        "-passwordHash"
+      );
+
+      res.json({
+        success: true,
+        users
+      });
+    } catch {
+      res.status(500).json({
+        success: false,
+        message: "Failed to load users"
+      });
+    }
+  }
+);
 
 // Admin: change balance
 app.post(
   "/api/admin/users/:id/balance",
   auth,
   adminOnly,
-  (req, res) => {
-    const { amount } = req.body;
+  async (req, res) => {
+    try {
+      const numericAmount = Number(req.body.amount);
 
-    const user = users.find(
-      (item) => item.id === req.params.id
-    );
+      if (!Number.isFinite(numericAmount)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amount"
+        });
+      }
 
-    if (!user) {
-      return res.status(404).json({
+      const user = await User.findByIdAndUpdate(
+        req.params.id,
+        { balance: numericAmount },
+        { new: true }
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found"
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Balance updated",
+        balance: user.balance,
+        currency: user.currency
+      });
+    } catch {
+      res.status(500).json({
         success: false,
-        message: "User not found"
+        message: "Failed to update balance"
       });
     }
-
-    const numericAmount = Number(amount);
-
-    if (!Number.isFinite(numericAmount)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid amount"
-      });
-    }
-
-    user.balance = numericAmount;
-
-    res.json({
-      success: true,
-      message: "Balance updated",
-      balance: user.balance,
-      currency: user.currency
-    });
   }
 );
 
 app.listen(PORT, () => {
-  console.log(`Zonguru backend running on port ${PORT}`);
+  console.log(
+    `Zonguru backend running on port ${PORT}`
+  );
 });
