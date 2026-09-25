@@ -1,10 +1,8 @@
-require("dotenv").config();
-
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 const app = express();
 
@@ -12,12 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET =
-  process.env.JWT_SECRET || "CHANGE_THIS_SECRET";
-
-// ===============================
-// MongoDB Connection
-// ===============================
+const JWT_SECRET = process.env.JWT_SECRET || "ZONGURU_SECRET_2026";
 
 const MONGO_URL = process.env.MONGO_URL;
 
@@ -25,6 +18,41 @@ if (!MONGO_URL) {
   console.error("ERROR: MONGO_URL is not set.");
   process.exit(1);
 }
+
+// ===============================
+// Password Functions
+// ===============================
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+
+  const hash = crypto
+    .scryptSync(password, salt, 64)
+    .toString("hex");
+
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedPassword) {
+  try {
+    const [salt, storedHash] = storedPassword.split(":");
+
+    const hash = crypto
+      .scryptSync(password, salt, 64)
+      .toString("hex");
+
+    return crypto.timingSafeEqual(
+      Buffer.from(hash, "hex"),
+      Buffer.from(storedHash, "hex")
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+// ===============================
+// MongoDB
+// ===============================
 
 mongoose
   .connect(MONGO_URL)
@@ -48,39 +76,39 @@ const userSchema = new mongoose.Schema(
       required: true,
       unique: true,
       trim: true,
-      minlength: 3,
+      minlength: 3
     },
 
     passwordHash: {
       type: String,
-      required: true,
+      required: true
     },
 
     role: {
       type: String,
       enum: ["user", "admin"],
-      default: "user",
+      default: "user"
     },
 
     balance: {
       type: Number,
-      default: 0,
+      default: 0
     },
 
     currency: {
       type: String,
-      default: "USDT",
-    },
+      default: "USDT"
+    }
   },
   {
-    timestamps: true,
+    timestamps: true
   }
 );
 
 const User = mongoose.model("User", userSchema);
 
 // ===============================
-// JWT Token
+// JWT
 // ===============================
 
 function createToken(user) {
@@ -88,17 +116,17 @@ function createToken(user) {
     {
       id: user._id.toString(),
       username: user.username,
-      role: user.role,
+      role: user.role
     },
     JWT_SECRET,
     {
-      expiresIn: "7d",
+      expiresIn: "7d"
     }
   );
 }
 
 // ===============================
-// Authentication Middleware
+// Auth Middleware
 // ===============================
 
 function auth(req, res, next) {
@@ -107,22 +135,19 @@ function auth(req, res, next) {
   if (!header || !header.startsWith("Bearer ")) {
     return res.status(401).json({
       success: false,
-      message: "Login required",
+      message: "Login required"
     });
   }
 
   const token = header.split(" ")[1];
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    req.user = decoded;
-
+    req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch (error) {
     return res.status(401).json({
       success: false,
-      message: "Invalid or expired token",
+      message: "Invalid or expired token"
     });
   }
 }
@@ -135,7 +160,7 @@ function adminOnly(req, res, next) {
   if (req.user.role !== "admin") {
     return res.status(403).json({
       success: false,
-      message: "Admin access required",
+      message: "Admin access required"
     });
   }
 
@@ -150,7 +175,7 @@ app.get("/", (req, res) => {
   res.json({
     success: true,
     service: "Zonguru Backend",
-    status: "online",
+    status: "online"
   });
 });
 
@@ -165,7 +190,7 @@ app.post("/api/auth/register", async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Username and password are required",
+        message: "Username and password are required"
       });
     }
 
@@ -176,62 +201,59 @@ app.post("/api/auth/register", async (req, res) => {
     if (cleanUsername.length < 3) {
       return res.status(400).json({
         success: false,
-        message: "Username must contain at least 3 characters",
+        message: "Username must contain at least 3 characters"
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: "Password must contain at least 6 characters",
+        message: "Password must contain at least 6 characters"
       });
     }
 
     const existingUser = await User.findOne({
-      username: cleanUsername,
+      username: cleanUsername
     });
 
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: "Username already registered",
+        message: "Username already registered"
       });
     }
 
-    const passwordHash = await bcrypt.hash(
-      password,
-      12
-    );
+    const passwordHash = hashPassword(password);
 
     const user = await User.create({
       username: cleanUsername,
       passwordHash,
       role: "user",
       balance: 0,
-      currency: "USDT",
+      currency: "USDT"
     });
 
     const token = createToken(user);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Registration successful",
       token,
-
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency,
-      },
+        currency: user.currency
+      }
     });
+
   } catch (error) {
     console.error("Registration error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Registration failed",
+      message: "Registration failed"
     });
   }
 });
@@ -247,7 +269,7 @@ app.post("/api/auth/login", async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Username and password are required",
+        message: "Username and password are required"
       });
     }
 
@@ -256,17 +278,17 @@ app.post("/api/auth/login", async (req, res) => {
       .toLowerCase();
 
     const user = await User.findOne({
-      username: cleanUsername,
+      username: cleanUsername
     });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid username or password",
+        message: "Invalid username or password"
       });
     }
 
-    const validPassword = await bcrypt.compare(
+    const validPassword = verifyPassword(
       password,
       user.passwordHash
     );
@@ -274,31 +296,31 @@ app.post("/api/auth/login", async (req, res) => {
     if (!validPassword) {
       return res.status(401).json({
         success: false,
-        message: "Invalid username or password",
+        message: "Invalid username or password"
       });
     }
 
     const token = createToken(user);
 
-    res.json({
+    return res.json({
       success: true,
       message: "Login successful",
       token,
-
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency,
-      },
+        currency: user.currency
+      }
     });
+
   } catch (error) {
     console.error("Login error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Login failed",
+      message: "Login failed"
     });
   }
 });
@@ -314,31 +336,31 @@ app.get("/api/me", auth, async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "User not found"
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
-
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency,
-      },
+        currency: user.currency
+      }
     });
+
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to load user",
+      message: "Failed to load user"
     });
   }
 });
 
 // ===============================
-// Admin - List Users
+// Admin Users
 // ===============================
 
 app.get(
@@ -351,21 +373,22 @@ app.get(
         .select("-passwordHash")
         .sort({ createdAt: -1 });
 
-      res.json({
+      return res.json({
         success: true,
-        users,
+        users
       });
+
     } catch (error) {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
-        message: "Failed to load users",
+        message: "Failed to load users"
       });
     }
   }
 );
 
 // ===============================
-// Admin - Change Balance
+// Admin Balance
 // ===============================
 
 app.post(
@@ -374,32 +397,28 @@ app.post(
   adminOnly,
   async (req, res) => {
     try {
-      const { amount } = req.body;
-
-      const numericAmount = Number(amount);
+      const numericAmount = Number(req.body.amount);
 
       if (!Number.isFinite(numericAmount)) {
         return res.status(400).json({
           success: false,
-          message: "Invalid amount",
+          message: "Invalid amount"
         });
       }
 
       if (numericAmount < 0) {
         return res.status(400).json({
           success: false,
-          message: "Balance cannot be negative",
+          message: "Balance cannot be negative"
         });
       }
 
-      const user = await User.findById(
-        req.params.id
-      );
+      const user = await User.findById(req.params.id);
 
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found",
+          message: "User not found"
         });
       }
 
@@ -407,21 +426,19 @@ app.post(
 
       await user.save();
 
-      res.json({
+      return res.json({
         success: true,
         message: "Balance updated",
         balance: user.balance,
-        currency: user.currency,
+        currency: user.currency
       });
-    } catch (error) {
-      console.error(
-        "Balance update error:",
-        error
-      );
 
-      res.status(500).json({
+    } catch (error) {
+      console.error("Balance update error:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Failed to update balance",
+        message: "Failed to update balance"
       });
     }
   }
@@ -432,7 +449,5 @@ app.post(
 // ===============================
 
 app.listen(PORT, () => {
-  console.log(
-    `Zonguru backend running on port ${PORT}`
-  );
+  console.log(`Zonguru backend running on port ${PORT}`);
 });
