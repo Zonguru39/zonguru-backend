@@ -12,24 +12,34 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET =
+  process.env.JWT_SECRET || "CHANGE_THIS_SECRET";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+// ===============================
+// MongoDB Connection
+// ===============================
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGO_URL = process.env.MONGO_URL;
 
-if (!JWT_SECRET) {
-  console.error("ERROR: JWT_SECRET is missing");
+if (!MONGO_URL) {
+  console.error("ERROR: MONGO_URL is not set.");
   process.exit(1);
 }
 
-if (!MONGODB_URI) {
-  console.error("ERROR: MONGODB_URI is missing");
-  process.exit(1);
-}
+mongoose
+  .connect(MONGO_URL)
+  .then(() => {
+    console.log("MongoDB connected successfully");
+  })
+  .catch((error) => {
+    console.error("MongoDB connection failed:");
+    console.error(error.message);
+    process.exit(1);
+  });
 
-/* =========================
-   USER MODEL
-========================= */
+// ===============================
+// User Schema
+// ===============================
 
 const userSchema = new mongoose.Schema(
   {
@@ -37,58 +47,59 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
-      trim: true
+      trim: true,
+      minlength: 3,
     },
 
     passwordHash: {
       type: String,
-      required: true
+      required: true,
     },
 
     role: {
       type: String,
       enum: ["user", "admin"],
-      default: "user"
+      default: "user",
     },
 
     balance: {
       type: Number,
-      default: 0
+      default: 0,
     },
 
     currency: {
       type: String,
-      default: "USDT"
-    }
+      default: "USDT",
+    },
   },
   {
-    timestamps: true
+    timestamps: true,
   }
 );
 
 const User = mongoose.model("User", userSchema);
 
-/* =========================
-   JWT
-========================= */
+// ===============================
+// JWT Token
+// ===============================
 
 function createToken(user) {
   return jwt.sign(
     {
       id: user._id.toString(),
       username: user.username,
-      role: user.role
+      role: user.role,
     },
     JWT_SECRET,
     {
-      expiresIn: "7d"
+      expiresIn: "7d",
     }
   );
 }
 
-/* =========================
-   AUTH MIDDLEWARE
-========================= */
+// ===============================
+// Authentication Middleware
+// ===============================
 
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -96,11 +107,11 @@ function auth(req, res, next) {
   if (!header || !header.startsWith("Bearer ")) {
     return res.status(401).json({
       success: false,
-      message: "Login required"
+      message: "Login required",
     });
   }
 
-  const token = header.substring(7);
+  const token = header.split(" ")[1];
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -111,143 +122,147 @@ function auth(req, res, next) {
   } catch (error) {
     return res.status(401).json({
       success: false,
-      message: "Invalid or expired token"
+      message: "Invalid or expired token",
     });
   }
 }
 
-/* =========================
-   ADMIN MIDDLEWARE
-========================= */
+// ===============================
+// Admin Middleware
+// ===============================
 
 function adminOnly(req, res, next) {
-  if (!req.user || req.user.role !== "admin") {
+  if (req.user.role !== "admin") {
     return res.status(403).json({
       success: false,
-      message: "Admin access required"
+      message: "Admin access required",
     });
   }
 
   next();
 }
 
-/* =========================
-   HEALTH CHECK
-========================= */
+// ===============================
+// Health Check
+// ===============================
 
 app.get("/", (req, res) => {
   res.json({
     success: true,
     service: "Zonguru Backend",
-    status: "online"
+    status: "online",
   });
 });
 
-/* =========================
-   REGISTER
-========================= */
+// ===============================
+// Register
+// ===============================
 
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const username = String(req.body.username || "")
-      .trim()
-      .toLowerCase();
-
-    const password = String(req.body.password || "");
+    const { username, password } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Username and password are required"
+        message: "Username and password are required",
       });
     }
 
-    if (username.length < 3) {
+    const cleanUsername = String(username)
+      .trim()
+      .toLowerCase();
+
+    if (cleanUsername.length < 3) {
       return res.status(400).json({
         success: false,
-        message: "Username must contain at least 3 characters"
+        message: "Username must contain at least 3 characters",
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: "Password must contain at least 6 characters"
+        message: "Password must contain at least 6 characters",
       });
     }
 
     const existingUser = await User.findOne({
-      username
+      username: cleanUsername,
     });
 
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: "Username already registered"
+        message: "Username already registered",
       });
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await bcrypt.hash(
+      password,
+      12
+    );
 
     const user = await User.create({
-      username,
+      username: cleanUsername,
       passwordHash,
       role: "user",
       balance: 0,
-      currency: "USDT"
+      currency: "USDT",
     });
 
     const token = createToken(user);
 
-    return res.status(201).json({
+    res.status(201).json({
       success: true,
       message: "Registration successful",
       token,
+
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency
-      }
+        currency: user.currency,
+      },
     });
   } catch (error) {
-    console.error("REGISTER ERROR:", error);
+    console.error("Registration error:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Registration failed"
+      message: "Registration failed",
     });
   }
 });
 
-/* =========================
-   LOGIN
-========================= */
+// ===============================
+// Login
+// ===============================
 
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const username = String(req.body.username || "")
-      .trim()
-      .toLowerCase();
-
-    const password = String(req.body.password || "");
+    const { username, password } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Username and password are required"
+        message: "Username and password are required",
       });
     }
 
+    const cleanUsername = String(username)
+      .trim()
+      .toLowerCase();
+
     const user = await User.findOne({
-      username
+      username: cleanUsername,
     });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid username or password"
+        message: "Invalid username or password",
       });
     }
 
@@ -259,74 +274,72 @@ app.post("/api/auth/login", async (req, res) => {
     if (!validPassword) {
       return res.status(401).json({
         success: false,
-        message: "Invalid username or password"
+        message: "Invalid username or password",
       });
     }
 
     const token = createToken(user);
 
-    return res.json({
+    res.json({
       success: true,
       message: "Login successful",
       token,
+
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency
-      }
+        currency: user.currency,
+      },
     });
   } catch (error) {
-    console.error("LOGIN ERROR:", error);
+    console.error("Login error:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Login failed"
+      message: "Login failed",
     });
   }
 });
 
-/* =========================
-   CURRENT USER
-========================= */
+// ===============================
+// Current User
+// ===============================
 
 app.get("/api/me", auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select(
-      "-passwordHash"
-    );
+    const user = await User.findById(req.user.id);
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found"
+        message: "User not found",
       });
     }
 
-    return res.json({
+    res.json({
       success: true,
+
       user: {
         id: user._id,
         username: user.username,
         role: user.role,
         balance: user.balance,
-        currency: user.currency
-      }
+        currency: user.currency,
+      },
     });
   } catch (error) {
-    console.error("ME ERROR:", error);
-
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Could not load user"
+      message: "Failed to load user",
     });
   }
 });
 
-/* =========================
-   ADMIN - USERS
-========================= */
+// ===============================
+// Admin - List Users
+// ===============================
 
 app.get(
   "/api/admin/users",
@@ -338,24 +351,22 @@ app.get(
         .select("-passwordHash")
         .sort({ createdAt: -1 });
 
-      return res.json({
+      res.json({
         success: true,
-        users
+        users,
       });
     } catch (error) {
-      console.error("ADMIN USERS ERROR:", error);
-
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
-        message: "Could not load users"
+        message: "Failed to load users",
       });
     }
   }
 );
 
-/* =========================
-   ADMIN - UPDATE BALANCE
-========================= */
+// ===============================
+// Admin - Change Balance
+// ===============================
 
 app.post(
   "/api/admin/users/:id/balance",
@@ -363,12 +374,21 @@ app.post(
   adminOnly,
   async (req, res) => {
     try {
-      const amount = Number(req.body.amount);
+      const { amount } = req.body;
 
-      if (!Number.isFinite(amount)) {
+      const numericAmount = Number(amount);
+
+      if (!Number.isFinite(numericAmount)) {
         return res.status(400).json({
           success: false,
-          message: "Invalid amount"
+          message: "Invalid amount",
+        });
+      }
+
+      if (numericAmount < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Balance cannot be negative",
         });
       }
 
@@ -379,65 +399,40 @@ app.post(
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found"
+          message: "User not found",
         });
       }
 
-      user.balance = amount;
+      user.balance = numericAmount;
 
       await user.save();
 
-      return res.json({
+      res.json({
         success: true,
         message: "Balance updated",
         balance: user.balance,
-        currency: user.currency
+        currency: user.currency,
       });
     } catch (error) {
-      console.error("BALANCE ERROR:", error);
+      console.error(
+        "Balance update error:",
+        error
+      );
 
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
-        message: "Could not update balance"
+        message: "Failed to update balance",
       });
     }
   }
 );
 
-/* =========================
-   404
-========================= */
+// ===============================
+// Start Server
+// ===============================
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "Route not found"
-  });
+app.listen(PORT, () => {
+  console.log(
+    `Zonguru backend running on port ${PORT}`
+  );
 });
-
-/* =========================
-   START SERVER
-========================= */
-
-async function startServer() {
-  try {
-    await mongoose.connect(MONGODB_URI);
-
-    console.log("MongoDB connected successfully");
-
-    app.listen(PORT, () => {
-      console.log(
-        `Zonguru backend running on port ${PORT}`
-      );
-    });
-  } catch (error) {
-    console.error(
-      "MongoDB connection failed:",
-      error.message
-    );
-
-    process.exit(1);
-  }
-}
-
-startServer();
