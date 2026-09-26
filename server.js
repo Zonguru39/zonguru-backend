@@ -193,6 +193,10 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
     const email=emailOf(req.body?.email??user.email);
     const phone=String(req.body?.phone??user.phone).trim();
     const avatarUrl=String((req.body?.avatarUrl ?? user.avatarUrl) || "").trim();
+    const currency=String(req.body?.currency ?? user.currency ?? "USDT").trim().toUpperCase();
+    const allowedCurrencies=["USDT","MXN","USD","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR"];
+    if(!allowedCurrencies.includes(currency))
+      return res.status(400).json({success:false,message:"Unsupported currency"});
 
     if(username.length<3)
       return res.status(400).json({success:false,message:"Username must be at least 3 characters"});
@@ -212,6 +216,7 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
     user.email=email;
     user.phone=phone;
     user.avatarUrl=avatarUrl;
+    user.currency=currency;
     await user.save();
 
     res.json({success:true,message:"Profile updated successfully",user:publicUser(user)});
