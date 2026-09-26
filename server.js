@@ -69,7 +69,9 @@ const UserSchema=new mongoose.Schema({
 const ProductSchema=new mongoose.Schema({
   name:String,description:String,category:String,
   price:{type:Number,default:0},profitRate:{type:Number,default:0},
-  image:String,minAmount:Number,maxAmount:Number,
+  image:String,
+  balanceGuardEnabled:{type:Boolean,default:false},
+  minAmount:Number,maxAmount:Number,
   dailyRate:Number,durationDays:Number,
   active:{type:Boolean,default:true}
 });
@@ -325,7 +327,7 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   if(amount<=0)
     return res.status(400).json({success:false,message:"Product value is not configured"});
 
-  if(user.balance<amount){
+  if(p.balanceGuardEnabled && user.balance<amount){
     const difference=amount-user.balance;
     return res.status(400).json({
       success:false,
@@ -343,6 +345,7 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
     success:true,
     product:p,
     amount,
+    balanceGuardEnabled:Boolean(p.balanceGuardEnabled),
     profitRate:rate,
     estimatedProfit
   });
