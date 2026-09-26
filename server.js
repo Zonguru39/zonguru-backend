@@ -89,6 +89,15 @@ const User=mongoose.model("User",UserSchema);
 const Product=mongoose.model("Product",ProductSchema);
 const Transaction=mongoose.model("Transaction",TransactionSchema);
 const Message=mongoose.model("Message",MessageSchema);
+const TaskProgressSchema=new mongoose.Schema({
+  userId:{type:mongoose.Schema.Types.ObjectId,unique:true},
+  productIds:[mongoose.Schema.Types.ObjectId],
+  completedIds:[mongoose.Schema.Types.ObjectId],
+  startedAt:{type:Date,default:Date.now},
+  updatedAt:{type:Date,default:Date.now}
+});
+const TaskProgress=mongoose.model("TaskProgress",TaskProgressSchema);
+
 
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
@@ -243,6 +252,62 @@ app.post("/api/auth/change-password",auth,async(req,res)=>{
 
 app.get("/api/products",auth,async(req,res)=>{
   res.json({success:true,products:await Product.find({active:true}).sort({createdAt:1})});
+});
+
+app.get("/api/tasks/current",auth,async(req,res)=>{
+  try{
+    let task=await TaskProgress.findOne({userId:req.auth.id});
+    let products=await Product.find({active:true}).sort({createdAt:1}).limit(5);
+    if(!task||!task.productIds?.length){
+      if(products.length<5)return res.json({success:true,task:null,message:"At least 5 active products are required"});
+      task=await TaskProgress.findOneAndUpdate(
+        {userId:req.auth.id},
+        {userId:req.auth.id,productIds:products.map(p=>p._id),completedIds:[],updatedAt:new Date()},
+        {upsert:true,new:true}
+      );
+    }
+    products=await Product.find({_id:{$in:task.productIds}}).sort({createdAt:1});
+    const completed=new Set((task.completedIds||[]).map(String));
+    res.json({
+      success:true,
+      task:{
+        total:5,
+        completed:products.filter(p=>completed.has(String(p._id))).length,
+        products:products.map(p=>({
+          id:p._id,name:p.name,description:p.description,category:p.category,
+          price:Number(p.price||0),profitRate:Number(p.profitRate||p.dailyRate||0),
+          image:p.image||"",completed:completed.has(String(p._id))
+        }))
+      }
+    });
+  }catch(e){
+    console.error("task current",e);
+    res.status(500).json({success:false,message:"Unable to load task"});
+  }
+});
+
+app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
+  try{
+    const task=await TaskProgress.findOne({userId:req.auth.id});
+    if(!task)return res.status(404).json({success:false,message:"No active task"});
+    if(!task.productIds.some(id=>String(id)===String(req.params.productId)))
+      return res.status(400).json({success:false,message:"Product is not part of the current task"});
+    if(task.completedIds.some(id=>String(id)===String(req.params.productId)))
+      return res.json({success:true,message:"Order already completed",completed:true});
+    task.completedIds.push(req.params.productId);
+    task.updatedAt=new Date();
+    await task.save();
+    const completed=task.completedIds.length;
+    res.json({success:true,completed,total:5,taskComplete:completed>=5});
+  }catch(e){
+    console.error("task complete",e);
+    res.status(500).json({success:false,message:"Unable to complete order"});
+  }
+});
+
+app.post("/api/tasks/reset",auth,async(req,res)=>{
+  await TaskProgress.deleteOne({userId:req.auth.id});
+  res.json({success:true});
 });
 
 app.post("/api/products/:id/optimize",auth,async(req,res)=>{
