@@ -40,7 +40,11 @@ function publicUser(user){
     id:user._id, username:user.username, email:user.email, phone:user.phone,
     emailVerified:true, role:user.role, balance:user.balance,
     currency:user.currency, totalProfit:user.totalProfit,
-    referralCode:user.referralCode, referredBy:user.referredBy||null
+    referralCode:user.referralCode, referredBy:user.referredBy||null,
+    frozenAmount:Number(user.frozenAmount||0),
+    creditPoints:Number(user.creditPoints||0),
+    creditScore:Number(user.creditScore??100),
+    avatarUrl:user.avatarUrl||""
   };
 }
 
@@ -56,6 +60,10 @@ const UserSchema=new mongoose.Schema({
   totalProfit:{type:Number,default:0},
   referralCode:{type:String,unique:true},
   referredBy:{type:String,default:null},
+  frozenAmount:{type:Number,default:0},
+  creditPoints:{type:Number,default:0},
+  creditScore:{type:Number,default:100},
+  avatarUrl:{type:String,default:""},
   createdAt:{type:Date,default:Date.now}
 });
 const ProductSchema=new mongoose.Schema({
@@ -174,6 +182,43 @@ app.get("/api/me",auth,async(req,res)=>{
   const user=await User.findById(req.auth.id);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   res.json({success:true,user:publicUser(user)});
+});
+
+app.patch("/api/me/profile",auth,async(req,res)=>{
+  try{
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+
+    const username=String(req.body?.username??user.username).trim();
+    const email=emailOf(req.body?.email??user.email);
+    const phone=String(req.body?.phone??user.phone).trim();
+    const avatarUrl=String(req.body?.avatarUrl??user.avatarUrl||"").trim();
+
+    if(username.length<3)
+      return res.status(400).json({success:false,message:"Username must be at least 3 characters"});
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({success:false,message:"Enter a valid email address"});
+    if(phone.replace(/\D/g,"").length<6)
+      return res.status(400).json({success:false,message:"Enter a valid phone number"});
+    if(avatarUrl && avatarUrl.length>900000)
+      return res.status(400).json({success:false,message:"Profile image is too large"});
+
+    const otherUsername=await User.findOne({_id:{$ne:user._id},username});
+    if(otherUsername)return res.status(409).json({success:false,message:"Username is already registered"});
+    const otherEmail=await User.findOne({_id:{$ne:user._id},email});
+    if(otherEmail)return res.status(409).json({success:false,message:"This email is already registered"});
+
+    user.username=username;
+    user.email=email;
+    user.phone=phone;
+    user.avatarUrl=avatarUrl;
+    await user.save();
+
+    res.json({success:true,message:"Profile updated successfully",user:publicUser(user)});
+  }catch(e){
+    console.error("profile update",e);
+    res.status(500).json({success:false,message:e.message||"Profile update failed"});
+  }
 });
 
 app.post("/api/auth/change-password",auth,async(req,res)=>{
@@ -372,7 +417,7 @@ app.post("/api/admin/messages",auth,admin,async(req,res)=>{
 
 app.get("/api/admin/chat/:userId",auth,admin,async(req,res)=>{
   try{
-    const messages=await ChatMessage.find({userId:req.params.userId}).sort({createdAt:1});
+    const messages=await Message.find({userId:req.params.userId}).sort({createdAt:1});
     res.json({success:true,messages});
   }catch(e){
     res.status(500).json({success:false,message:"Unable to load chat"});
@@ -383,7 +428,7 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
   try{
     const text=String(req.body?.text||"").trim();
     if(!text)return res.status(400).json({success:false,message:"Reply is required"});
-    const message=await ChatMessage.create({
+    const message=await Message.create({
       userId:req.params.userId,
       sender:"admin",
       text,
