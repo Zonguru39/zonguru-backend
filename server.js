@@ -278,14 +278,10 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     if(Number(user.vipLevel||0)<1)return res.json({success:true,task:null,locked:true,requiredVip:1,message:"VIP 1 is required to order products"});
     let products=await Product.find({
       active:true,
-      requiredVip:{$lte:Number(user.vipLevel||0)},
-      $or:[
-        {minBalance:{$lte:Number(user.balance||0),maxBalance:0}},
-        {minBalance:{$lte:Number(user.balance||0),maxBalance:{$gte:Number(user.balance||0)}}}
-      ]
+      requiredVip:{$lte:Number(user.vipLevel||0)}
     }).sort({createdAt:1}).limit(5);
     if(!task||!task.productIds?.length){
-      if(products.length<5)return res.json({success:true,task:null,message:"At least 5 active products are required"});
+      if(products.length<5)return res.json({success:true,task:null,message:"At least 5 active products are required",availableProducts:products.length});
       task=await TaskProgress.findOneAndUpdate(
         {userId:req.auth.id},
         {userId:req.auth.id,productIds:products.map(p=>p._id),completedIds:[],updatedAt:new Date()},
