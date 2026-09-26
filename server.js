@@ -67,8 +67,11 @@ const UserSchema=new mongoose.Schema({
   createdAt:{type:Date,default:Date.now}
 });
 const ProductSchema=new mongoose.Schema({
-  name:String,description:String,minAmount:Number,maxAmount:Number,
-  dailyRate:Number,durationDays:Number,active:{type:Boolean,default:true}
+  name:String,description:String,category:String,
+  price:{type:Number,default:0},profitRate:{type:Number,default:0},
+  image:String,minAmount:Number,maxAmount:Number,
+  dailyRate:Number,durationDays:Number,
+  active:{type:Boolean,default:true}
 });
 const TransactionSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,type:String,amount:Number,
@@ -244,13 +247,39 @@ app.get("/api/products",auth,async(req,res)=>{
 
 app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   const p=await Product.findById(req.params.id);
+  const user=await User.findById(req.auth.id);
   if(!p||!p.active)return res.status(404).json({success:false,message:"Product not found"});
-  const amount=Number(req.body?.amount||0);
-  if(amount<p.minAmount||amount>p.maxAmount)
-    return res.status(400).json({success:false,message:"Amount is outside the product range"});
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+
+  const configuredPrice=Number(p.price||0);
+  const requestedAmount=Number(req.body?.amount);
+  const amount=Number.isFinite(requestedAmount)&&requestedAmount>0
+    ? requestedAmount
+    : configuredPrice;
+
+  if(amount<=0)
+    return res.status(400).json({success:false,message:"Product value is not configured"});
+
+  if(user.balance<amount){
+    const difference=amount-user.balance;
+    return res.status(400).json({
+      success:false,
+      insufficientBalance:true,
+      message:"Insufficient balance",
+      requiredAmount:amount,
+      availableBalance:user.balance,
+      difference
+    });
+  }
+
+  const rate=Number(p.profitRate||p.dailyRate||0);
+  const estimatedProfit=amount*(rate/100);
   res.json({
-    success:true,product:p,
-    estimatedProfit:amount*(Number(p.dailyRate||0)/100)*Number(p.durationDays||0)
+    success:true,
+    product:p,
+    amount,
+    profitRate:rate,
+    estimatedProfit
   });
 });
 
@@ -400,6 +429,9 @@ app.post("/api/admin/products",auth,admin,async(req,res)=>{
   res.json({success:true,product:await Product.create(req.body)});
 });
 app.put("/api/admin/products/:id",auth,admin,async(req,res)=>{
+  res.json({success:true,product:await Product.findByIdAndUpdate(req.params.id,req.body,{new:true})});
+});
+app.patch("/api/admin/products/:id",auth,admin,async(req,res)=>{
   res.json({success:true,product:await Product.findByIdAndUpdate(req.params.id,req.body,{new:true})});
 });
 app.delete("/api/admin/products/:id",auth,admin,async(req,res)=>{
