@@ -281,7 +281,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
       requiredVip:{$lte:Number(user.vipLevel||0)},
       $or:[
         {minBalance:{$lte:Number(user.balance||0),maxBalance:0}},
-        {minBalance:{$lte:Number(user.balance||0),maxBalance:{$gte:Number(user.balance||0)}}
+        {minBalance:{$lte:Number(user.balance||0),maxBalance:{$gte:Number(user.balance||0)}}}
       ]
     }).sort({createdAt:1}).limit(5);
     if(!task||!task.productIds?.length){
