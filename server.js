@@ -108,6 +108,7 @@ const OrderSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,
   productId:mongoose.Schema.Types.ObjectId,
   productName:String,amount:Number,profitRate:Number,commission:Number,
+  reviewText:{type:String,default:""},
   status:{type:String,default:"completed"},
   createdAt:{type:Date,default:Date.now}
 });
@@ -298,7 +299,8 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         products:products.map(p=>({
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitRate:Number(p.profitRate||p.dailyRate||0),
-          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id))
+          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id)),
+          reviewSuggestions:getReviewSuggestions(p)
         }))
       }
     });
@@ -308,6 +310,33 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
   }
 });
 
+function getReviewSuggestions(product){
+  const text=((product?.name||"")+" "+(product?.description||"")+" "+(product?.category||"")).toLowerCase();
+  if(/pen|stationery|paper|notebook|office/.test(text))
+    return [
+      "The product quality and design are very good. It is practical and easy to use.",
+      "The item looks well made and matches the product description. I am satisfied with the overall quality.",
+      "A useful product with a clean design and good finish. The product arrived as expected."
+    ];
+  if(/cable|cord|network|router|electronic|smart|tech|accessory/.test(text))
+    return [
+      "The product works well and the build quality feels good. It matches the listed specifications.",
+      "The item is practical and performs as described. The design and quality are satisfactory.",
+      "Good product quality and useful design. The product information was clear and matched the item."
+    ];
+  if(/home|wallpaper|furniture|kitchen|house/.test(text))
+    return [
+      "The product looks good and is practical for everyday use. The quality is satisfactory.",
+      "The item matches the description and has a nice finish. Overall, I am satisfied with the product.",
+      "A useful home product with good appearance and quality. It arrived as expected."
+    ];
+  return [
+    "The product matches the description and the overall quality is good. I am satisfied with the item.",
+    "The item looks well made and is as described. The quality and presentation are satisfactory.",
+    "The product is practical and the quality is good. The item matched the information provided."
+  ];
+}
+
 app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
   try{
     const task=await TaskProgress.findOne({userId:req.auth.id});
@@ -316,14 +345,48 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
       return res.status(400).json({success:false,message:"Product is not part of the current task"});
     if(task.completedIds.some(id=>String(id)===String(req.params.productId)))
       return res.json({success:true,message:"Order already completed",completed:true});
+
+    const user=await User.findById(req.auth.id);
+    const product=await Product.findById(req.params.productId);
+    if(!user||!product)return res.status(404).json({success:false,message:"User or product not found"});
+    if(Number(user.vipLevel||0)<Number(product.requiredVip||0))
+      return res.status(403).json({success:false,message:"VIP level required",requiredVip:Number(product.requiredVip||0)});
+
+    const amount=Number(product.price||0);
+    const rate=Number(product.profitRate||product.dailyRate||0);
+    if(amount<=0)return res.status(400).json({success:false,message:"Product value is not configured"});
+    if(product.balanceGuardEnabled && Number(user.balance||0)<amount){
+      const difference=amount-Number(user.balance||0);
+      return res.status(400).json({success:false,insufficientBalance:true,message:"Insufficient balance",requiredAmount:amount,availableBalance:Number(user.balance||0),difference});
+    }
+
+    const reviewText=String(req.body?.reviewText||"").trim();
+    if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
+    const commission=amount*(rate/100);
+
     task.completedIds.push(req.params.productId);
     task.updatedAt=new Date();
     await task.save();
-    const product=await Product.findById(req.params.productId);
-    const amount=Number(product?.price||0), rate=Number(product?.profitRate||product?.dailyRate||0), commission=amount*rate/100;
-    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product?.name||"Product",amount,profitRate:rate,commission,status:"completed"});
+
+    await Order.create({
+      userId:req.auth.id,
+      productId:req.params.productId,
+      productName:product.name||"Product",
+      amount,profitRate:rate,commission,
+      reviewText,status:"completed"
+    });
+
+    user.balance=Number(user.balance||0)+commission;
+    user.totalProfit=Number(user.totalProfit||0)+commission;
+    await user.save();
+
     const completed=task.completedIds.length;
-    res.json({success:true,completed,total:5,taskComplete:completed>=5});
+    res.json({
+      success:true,completed,total:5,taskComplete:completed>=5,
+      commission,creditedBalance:Number(user.balance||0),
+      totalProfit:Number(user.totalProfit||0),
+      reviewText
+    });
   }catch(e){
     console.error("task complete",e);
     res.status(500).json({success:false,message:"Unable to complete order"});
