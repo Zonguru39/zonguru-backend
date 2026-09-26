@@ -72,19 +72,11 @@ const MessageSchema=new mongoose.Schema({
   sender:{type:String,default:"system"},
   read:{type:Boolean,default:false},createdAt:{type:Date,default:Date.now}
 });
-const ChatMessageSchema=new mongoose.Schema({
-  userId:{type:mongoose.Schema.Types.ObjectId,required:true,index:true},
-  sender:{type:String,enum:["user","admin"],required:true},
-  text:{type:String,required:true,trim:true},
-  read:{type:Boolean,default:false},
-  createdAt:{type:Date,default:Date.now}
-},{collection:"customer_chat_messages"});
 
 const User=mongoose.model("User",UserSchema);
 const Product=mongoose.model("Product",ProductSchema);
 const Transaction=mongoose.model("Transaction",TransactionSchema);
 const Message=mongoose.model("Message",MessageSchema);
-const ChatMessage=mongoose.model("ChatMessage",ChatMessageSchema);
 
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
@@ -251,19 +243,15 @@ app.post("/api/messages/:id/read",auth,async(req,res)=>{
 
 app.get("/api/chat",auth,async(req,res)=>{
   try{
-    const chatMessages=await ChatMessage.find({userId:req.auth.id}).lean();
-    const legacyMessages=await Message.find({
+    const messages=await Message.find({
       userId:req.auth.id,
-      $or:[{subject:"Customer Service"},{sender:"admin"},{sender:"user"}]
-    }).lean();
-    const messages=[...chatMessages,...legacyMessages]
-      .sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt))
-      .filter((m,i,a)=>i===a.findIndex(x=>String(x._id)===String(m._id)));
+      $or:[
+        {subject:"Customer Service"},
+        {sender:"admin"},
+        {sender:"user"}
+      ]
+    }).sort({createdAt:1});
     const unread=messages.filter(m=>m.sender==="admin" && !m.read).length;
-    await ChatMessage.updateMany(
-      {userId:req.auth.id,sender:"admin",read:false},
-      {$set:{read:true}}
-    );
     await Message.updateMany(
       {userId:req.auth.id,sender:"admin",read:false},
       {$set:{read:true}}
@@ -280,21 +268,13 @@ app.post("/api/chat/send",auth,async(req,res)=>{
     const text=String(req.body?.text||"").trim();
     if(!text)return res.status(400).json({success:false,message:"Message is required"});
     if(text.length>2000)return res.status(400).json({success:false,message:"Message is too long"});
-    const message=await ChatMessage.create({
-      userId:req.auth.id,
-      sender:"user",
-      text,
-      read:true,
-      createdAt:new Date()
-    });
-    // Compatibility mirror: the current admin server reads the legacy messages collection.
-    await Message.create({
+    const message=await Message.create({
       userId:req.auth.id,
       subject:"Customer Service",
       text,
       sender:"user",
       read:true,
-      createdAt:message.createdAt
+      createdAt:new Date()
     });
     res.json({success:true,message});
   }catch(e){
@@ -305,8 +285,11 @@ app.post("/api/chat/send",auth,async(req,res)=>{
 
 app.get("/api/chat/notice",auth,async(req,res)=>{
   try{
-    const unread=(await ChatMessage.countDocuments({userId:req.auth.id,sender:"admin",read:false}))+
-      (await Message.countDocuments({userId:req.auth.id,sender:"admin",read:false}));
+    const unread=await Message.countDocuments({
+      userId:req.auth.id,
+      sender:"admin",
+      read:false
+    });
     res.json({success:true,unread});
   }catch(e){
     console.error("chat notice",e);
