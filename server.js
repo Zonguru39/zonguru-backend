@@ -69,6 +69,7 @@ const TransactionSchema=new mongoose.Schema({
 });
 const MessageSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,subject:String,text:String,
+  image:{type:String,default:""},
   sender:{type:String,default:"system"},
   read:{type:Boolean,default:false},createdAt:{type:Date,default:Date.now}
 });
@@ -266,12 +267,16 @@ app.get("/api/chat",auth,async(req,res)=>{
 app.post("/api/chat/send",auth,async(req,res)=>{
   try{
     const text=String(req.body?.text||"").trim();
-    if(!text)return res.status(400).json({success:false,message:"Message is required"});
+    const image=String(req.body?.image||"").trim();
+    if(!text && !image)return res.status(400).json({success:false,message:"Message or image is required"});
     if(text.length>2000)return res.status(400).json({success:false,message:"Message is too long"});
+    if(image && !/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(image))return res.status(400).json({success:false,message:"Invalid image"});
+    if(image.length>1600000)return res.status(400).json({success:false,message:"Image is too large"});
     const message=await Message.create({
       userId:req.auth.id,
       subject:"Customer Service",
       text,
+      image,
       sender:"user",
       read:true,
       createdAt:new Date()
