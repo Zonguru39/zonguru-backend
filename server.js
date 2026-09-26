@@ -72,11 +72,19 @@ const MessageSchema=new mongoose.Schema({
   sender:{type:String,default:"system"},
   read:{type:Boolean,default:false},createdAt:{type:Date,default:Date.now}
 });
+const ChatMessageSchema=new mongoose.Schema({
+  userId:{type:mongoose.Schema.Types.ObjectId,required:true,index:true},
+  sender:{type:String,enum:["user","admin"],required:true},
+  text:{type:String,required:true,trim:true},
+  read:{type:Boolean,default:false},
+  createdAt:{type:Date,default:Date.now}
+},{collection:"customer_chat_messages"});
 
 const User=mongoose.model("User",UserSchema);
 const Product=mongoose.model("Product",ProductSchema);
 const Transaction=mongoose.model("Transaction",TransactionSchema);
 const Message=mongoose.model("Message",MessageSchema);
+const ChatMessage=mongoose.model("ChatMessage",ChatMessageSchema);
 
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
@@ -243,9 +251,9 @@ app.post("/api/messages/:id/read",auth,async(req,res)=>{
 
 app.get("/api/chat",auth,async(req,res)=>{
   try{
-    const messages=await Message.find({userId:req.auth.id}).sort({createdAt:1});
+    const messages=await ChatMessage.find({userId:req.auth.id}).sort({createdAt:1});
     const unread=messages.filter(m=>m.sender==="admin" && !m.read).length;
-    await Message.updateMany(
+    await ChatMessage.updateMany(
       {userId:req.auth.id,sender:"admin",read:false},
       {$set:{read:true}}
     );
@@ -261,11 +269,10 @@ app.post("/api/chat/send",auth,async(req,res)=>{
     const text=String(req.body?.text||"").trim();
     if(!text)return res.status(400).json({success:false,message:"Message is required"});
     if(text.length>2000)return res.status(400).json({success:false,message:"Message is too long"});
-    const message=await Message.create({
+    const message=await ChatMessage.create({
       userId:req.auth.id,
-      subject:"Customer Service",
-      text,
       sender:"user",
+      text,
       read:true,
       createdAt:new Date()
     });
@@ -278,7 +285,7 @@ app.post("/api/chat/send",auth,async(req,res)=>{
 
 app.get("/api/chat/notice",auth,async(req,res)=>{
   try{
-    const unread=await Message.countDocuments({
+    const unread=await ChatMessage.countDocuments({
       userId:req.auth.id,sender:"admin",read:false
     });
     res.json({success:true,unread});
@@ -358,7 +365,7 @@ app.post("/api/admin/messages",auth,admin,async(req,res)=>{
 
 app.get("/api/admin/chat/:userId",auth,admin,async(req,res)=>{
   try{
-    const messages=await Message.find({userId:req.params.userId}).sort({createdAt:1});
+    const messages=await ChatMessage.find({userId:req.params.userId}).sort({createdAt:1});
     res.json({success:true,messages});
   }catch(e){
     res.status(500).json({success:false,message:"Unable to load chat"});
@@ -369,11 +376,10 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
   try{
     const text=String(req.body?.text||"").trim();
     if(!text)return res.status(400).json({success:false,message:"Reply is required"});
-    const message=await Message.create({
+    const message=await ChatMessage.create({
       userId:req.params.userId,
-      subject:"Customer Service",
-      text,
       sender:"admin",
+      text,
       read:false,
       createdAt:new Date()
     });
