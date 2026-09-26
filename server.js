@@ -298,7 +298,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         completed:products.filter(p=>completed.has(String(p._id))).length,
         products:products.map(p=>({
           id:p._id,name:p.name,description:p.description,category:p.category,
-          price:Number(p.price||0),profitRate:Number(p.profitRate||p.dailyRate||0),
+          price:Number(p.price||0),profitAmount:Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100,
           image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id)),
           reviewSuggestions:getReviewSuggestions(p)
         }))
@@ -394,8 +394,28 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
 });
 
 app.post("/api/tasks/reset",auth,async(req,res)=>{
-  await TaskProgress.deleteOne({userId:req.auth.id});
-  res.json({success:true});
+  try{
+    await TaskProgress.deleteOne({userId:req.auth.id});
+    res.json({success:true,message:"Task reset successfully"});
+  }catch(e){
+    res.status(500).json({success:false,message:"Task reset failed"});
+  }
+});
+
+app.post("/api/admin/users/:id/task-reset",auth,admin,async(req,res)=>{
+  try{
+    const user=await User.findOne({_id:req.params.id,role:"user"});
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    await TaskProgress.deleteOne({userId:user._id});
+    res.json({
+      success:true,
+      message:"Task reset successfully. Previous orders and profits were preserved.",
+      userId:user._id
+    });
+  }catch(e){
+    console.error("admin task reset",e);
+    res.status(500).json({success:false,message:"Task reset failed"});
+  }
 });
 
 app.post("/api/products/:id/optimize",auth,async(req,res)=>{
