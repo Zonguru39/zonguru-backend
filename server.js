@@ -44,6 +44,7 @@ function publicUser(user){
     frozenAmount:Number(user.frozenAmount||0),
     creditPoints:Number(user.creditPoints||0),
     creditScore:Number(user.creditScore??100),
+    vipLevel:Number(user.vipLevel||0),
     avatarUrl:user.avatarUrl||""
   };
 }
@@ -63,6 +64,7 @@ const UserSchema=new mongoose.Schema({
   frozenAmount:{type:Number,default:0},
   creditPoints:{type:Number,default:0},
   creditScore:{type:Number,default:100},
+  vipLevel:{type:Number,default:0,min:0,max:3},
   avatarUrl:{type:String,default:""},
   createdAt:{type:Date,default:Date.now}
 });
@@ -71,6 +73,9 @@ const ProductSchema=new mongoose.Schema({
   price:{type:Number,default:0},profitRate:{type:Number,default:0},
   image:String,
   balanceGuardEnabled:{type:Boolean,default:false},
+  requiredVip:{type:Number,default:0,min:0,max:3},
+  minBalance:{type:Number,default:0},
+  maxBalance:{type:Number,default:0},
   minAmount:Number,maxAmount:Number,
   dailyRate:Number,durationDays:Number,
   active:{type:Boolean,default:true}
@@ -99,6 +104,15 @@ const TaskProgressSchema=new mongoose.Schema({
   updatedAt:{type:Date,default:Date.now}
 });
 const TaskProgress=mongoose.model("TaskProgress",TaskProgressSchema);
+const OrderSchema=new mongoose.Schema({
+  userId:mongoose.Schema.Types.ObjectId,
+  productId:mongoose.Schema.Types.ObjectId,
+  productName:String,amount:Number,profitRate:Number,commission:Number,
+  status:{type:String,default:"completed"},
+  createdAt:{type:Date,default:Date.now}
+});
+const Order=mongoose.model("Order",OrderSchema);
+
 
 
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
@@ -259,7 +273,17 @@ app.get("/api/products",auth,async(req,res)=>{
 app.get("/api/tasks/current",auth,async(req,res)=>{
   try{
     let task=await TaskProgress.findOne({userId:req.auth.id});
-    let products=await Product.find({active:true}).sort({createdAt:1}).limit(5);
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(Number(user.vipLevel||0)<1)return res.json({success:true,task:null,locked:true,requiredVip:1,message:"VIP 1 is required to order products"});
+    let products=await Product.find({
+      active:true,
+      requiredVip:{$lte:Number(user.vipLevel||0)},
+      $or:[
+        {minBalance:{$lte:Number(user.balance||0),maxBalance:0}},
+        {minBalance:{$lte:Number(user.balance||0),maxBalance:{$gte:Number(user.balance||0)}}
+      ]
+    }).sort({createdAt:1}).limit(5);
     if(!task||!task.productIds?.length){
       if(products.length<5)return res.json({success:true,task:null,message:"At least 5 active products are required"});
       task=await TaskProgress.findOneAndUpdate(
@@ -278,7 +302,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         products:products.map(p=>({
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitRate:Number(p.profitRate||p.dailyRate||0),
-          image:p.image||"",balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id))
+          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id))
         }))
       }
     });
@@ -299,6 +323,9 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     task.completedIds.push(req.params.productId);
     task.updatedAt=new Date();
     await task.save();
+    const product=await Product.findById(req.params.productId);
+    const amount=Number(product?.price||0), rate=Number(product?.profitRate||product?.dailyRate||0), commission=amount*rate/100;
+    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product?.name||"Product",amount,profitRate:rate,commission,status:"completed"});
     const completed=task.completedIds.length;
     res.json({success:true,completed,total:5,taskComplete:completed>=5});
   }catch(e){
@@ -317,6 +344,7 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   const user=await User.findById(req.auth.id);
   if(!p||!p.active)return res.status(404).json({success:false,message:"Product not found"});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
+  if(Number(user.vipLevel||0)<Number(p.requiredVip||0))return res.status(403).json({success:false,message:"VIP level required",requiredVip:Number(p.requiredVip||0)});
 
   const configuredPrice=Number(p.price||0);
   const requestedAmount=Number(req.body?.amount);
@@ -378,6 +406,12 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   res.json({success:true,transaction:t});
 });
 
+app.get("/api/orders",auth,async(req,res)=>{
+  try{
+    const orders=await Order.find({userId:req.auth.id}).sort({createdAt:-1});
+    res.json({success:true,orders});
+  }catch(e){res.status(500).json({success:false,message:"Unable to load order history"});}
+});
 app.get("/api/transactions",auth,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find({userId:req.auth.id}).sort({createdAt:-1})});
 });
