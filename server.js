@@ -588,9 +588,23 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
   }
 });
 
+async function ensureDefaultProducts(){
+  const count=await Product.countDocuments({active:true});
+  if(count>=5)return;
+  const defaults=[
+    {name:"Premium Stainless Steel Screw Set",description:"Featured marketplace product review task.",price:20,profitRate:30,image:"https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
+    {name:"CAT6 Flat Patch Cord",description:"Featured networking product review task.",price:28,profitRate:31,image:"https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
+    {name:"Aluminum Fountain Pen",description:"Featured stationery product review task.",price:35,profitRate:32,image:"https://images.unsplash.com/photo-1585336261022-680e295ce5b4?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
+    {name:"Waterproof Self Adhesive Wallpaper",description:"Featured home product review task.",price:45,profitRate:33,image:"https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
+    {name:"Smart Home Accessory",description:"Featured electronics product review task.",price:60,profitRate:35,image:"https://images.unsplash.com/photo-1558008258-3256797b43f3?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true}
+  ];
+  const needed=5-count;
+  if(needed>0)await Product.insertMany(defaults.slice(0,needed));
+}
 async function start(){
   if(!MONGO_URL)throw new Error("MONGO_URL is not configured");
   await mongoose.connect(MONGO_URL);
+  await ensureDefaultProducts();
   console.log("MongoDB connected successfully");
   app.listen(PORT,()=>console.log(`Zonguru backend running on port ${PORT}`));
 }
