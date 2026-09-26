@@ -492,6 +492,14 @@ app.get("/api/team",auth,async(req,res)=>{
 app.get("/api/admin/users",auth,admin,async(req,res)=>{
   res.json({success:true,users:await User.find().sort({createdAt:-1})});
 });
+app.post("/api/admin/users/:id/vip",auth,admin,async(req,res)=>{
+  const level=Number(req.body?.vipLevel);
+  if(!Number.isInteger(level)||level<0||level>3)return res.status(400).json({success:false,message:"VIP level must be 0, 1, 2 or 3"});
+  const user=await User.findByIdAndUpdate(req.params.id,{vipLevel:level},{new:true});
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  await TaskProgress.deleteOne({userId:user._id});
+  res.json({success:true,user:publicUser(user)});
+});
 app.get("/api/admin/transactions",auth,admin,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find().sort({createdAt:-1})});
 });
