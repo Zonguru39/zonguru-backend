@@ -251,9 +251,20 @@ app.post("/api/messages/:id/read",auth,async(req,res)=>{
 
 app.get("/api/chat",auth,async(req,res)=>{
   try{
-    const messages=await ChatMessage.find({userId:req.auth.id}).sort({createdAt:1});
+    const chatMessages=await ChatMessage.find({userId:req.auth.id}).lean();
+    const legacyMessages=await Message.find({
+      userId:req.auth.id,
+      $or:[{subject:"Customer Service"},{sender:"admin"},{sender:"user"}]
+    }).lean();
+    const messages=[...chatMessages,...legacyMessages]
+      .sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt))
+      .filter((m,i,a)=>i===a.findIndex(x=>String(x._id)===String(m._id)));
     const unread=messages.filter(m=>m.sender==="admin" && !m.read).length;
     await ChatMessage.updateMany(
+      {userId:req.auth.id,sender:"admin",read:false},
+      {$set:{read:true}}
+    );
+    await Message.updateMany(
       {userId:req.auth.id,sender:"admin",read:false},
       {$set:{read:true}}
     );
@@ -276,6 +287,15 @@ app.post("/api/chat/send",auth,async(req,res)=>{
       read:true,
       createdAt:new Date()
     });
+    // Compatibility mirror: the current admin server reads the legacy messages collection.
+    await Message.create({
+      userId:req.auth.id,
+      subject:"Customer Service",
+      text,
+      sender:"user",
+      read:true,
+      createdAt:message.createdAt
+    });
     res.json({success:true,message});
   }catch(e){
     console.error("chat send",e);
@@ -285,9 +305,8 @@ app.post("/api/chat/send",auth,async(req,res)=>{
 
 app.get("/api/chat/notice",auth,async(req,res)=>{
   try{
-    const unread=await ChatMessage.countDocuments({
-      userId:req.auth.id,sender:"admin",read:false
-    });
+    const unread=(await ChatMessage.countDocuments({userId:req.auth.id,sender:"admin",read:false}))+
+      (await Message.countDocuments({userId:req.auth.id,sender:"admin",read:false}));
     res.json({success:true,unread});
   }catch(e){
     console.error("chat notice",e);
