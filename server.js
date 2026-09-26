@@ -278,7 +278,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         products:products.map(p=>({
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitRate:Number(p.profitRate||p.dailyRate||0),
-          image:p.image||"",completed:completed.has(String(p._id))
+          image:p.image||"",balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id))
         }))
       }
     });
