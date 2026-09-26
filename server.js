@@ -69,6 +69,7 @@ const TransactionSchema=new mongoose.Schema({
 });
 const MessageSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,subject:String,text:String,
+  sender:{type:String,default:"system"},
   read:{type:Boolean,default:false},createdAt:{type:Date,default:Date.now}
 });
 
@@ -77,7 +78,7 @@ const Product=mongoose.model("Product",ProductSchema);
 const Transaction=mongoose.model("Transaction",TransactionSchema);
 const Message=mongoose.model("Message",MessageSchema);
 
-app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online"}));
+app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
 /* Registration: NO email verification and NO Resend */
 app.post("/api/auth/register",async(req,res)=>{
@@ -239,6 +240,53 @@ app.post("/api/messages/:id/read",auth,async(req,res)=>{
   await Message.updateOne({_id:req.params.id,userId:req.auth.id},{$set:{read:true}});
   res.json({success:true});
 });
+
+app.get("/api/chat",auth,async(req,res)=>{
+  try{
+    const messages=await Message.find({userId:req.auth.id}).sort({createdAt:1});
+    const unread=messages.filter(m=>m.sender==="admin" && !m.read).length;
+    await Message.updateMany(
+      {userId:req.auth.id,sender:"admin",read:false},
+      {$set:{read:true}}
+    );
+    res.json({success:true,messages,unread});
+  }catch(e){
+    console.error("chat load",e);
+    res.status(500).json({success:false,message:"Unable to load customer service chat"});
+  }
+});
+
+app.post("/api/chat/send",auth,async(req,res)=>{
+  try{
+    const text=String(req.body?.text||"").trim();
+    if(!text)return res.status(400).json({success:false,message:"Message is required"});
+    if(text.length>2000)return res.status(400).json({success:false,message:"Message is too long"});
+    const message=await Message.create({
+      userId:req.auth.id,
+      subject:"Customer Service",
+      text,
+      sender:"user",
+      read:true,
+      createdAt:new Date()
+    });
+    res.json({success:true,message});
+  }catch(e){
+    console.error("chat send",e);
+    res.status(500).json({success:false,message:"Unable to send message"});
+  }
+});
+
+app.get("/api/chat/notice",auth,async(req,res)=>{
+  try{
+    const unread=await Message.countDocuments({
+      userId:req.auth.id,sender:"admin",read:false
+    });
+    res.json({success:true,unread});
+  }catch(e){
+    console.error("chat notice",e);
+    res.status(500).json({success:false,message:"Unable to check chat notice"});
+  }
+});
 app.get("/api/team",auth,async(req,res)=>{
   const user=await User.findById(req.auth.id);
   const members=await User.find({referredBy:user?.referralCode}).select("username email createdAt");
@@ -303,9 +351,36 @@ app.post("/api/admin/messages",auth,admin,async(req,res)=>{
   if(!userId||!text)return res.status(400).json({success:false,message:"userId and text are required"});
   const m=await Message.create({
     userId,subject:String(req.body?.subject||"Customer Service"),
-    text,read:false
+    text,sender:"admin",read:false
   });
   res.json({success:true,message:m});
+});
+
+app.get("/api/admin/chat/:userId",auth,admin,async(req,res)=>{
+  try{
+    const messages=await Message.find({userId:req.params.userId}).sort({createdAt:1});
+    res.json({success:true,messages});
+  }catch(e){
+    res.status(500).json({success:false,message:"Unable to load chat"});
+  }
+});
+
+app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
+  try{
+    const text=String(req.body?.text||"").trim();
+    if(!text)return res.status(400).json({success:false,message:"Reply is required"});
+    const message=await Message.create({
+      userId:req.params.userId,
+      subject:"Customer Service",
+      text,
+      sender:"admin",
+      read:false,
+      createdAt:new Date()
+    });
+    res.json({success:true,message});
+  }catch(e){
+    res.status(500).json({success:false,message:"Unable to send reply"});
+  }
 });
 
 async function start(){
