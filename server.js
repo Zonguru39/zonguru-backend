@@ -464,15 +464,26 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   if(amount<=0)
     return res.status(400).json({success:false,message:"Product value is not configured"});
 
-  if(p.balanceGuardEnabled && user.balance<amount){
-    const difference=amount-user.balance;
+  const taskProgress=await TaskProgress.findOne({userId:req.auth.id});
+  const taskNumber=Number(taskProgress?.completedIds?.length||0)+1;
+  const specialTriggered=Boolean(p.specialTask) &&
+    Number(p.specialTaskNumber||0)===taskNumber &&
+    Number(p.specialRequiredAmount||0)>0;
+  const requiredBalance=specialTriggered
+    ? Number(p.specialRequiredAmount)
+    : (p.balanceGuardEnabled ? amount : 0);
+
+  if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
+    const difference=requiredBalance-Number(user.balance||0);
     return res.status(400).json({
       success:false,
       insufficientBalance:true,
-      message:"Insufficient balance",
-      requiredAmount:amount,
-      availableBalance:user.balance,
-      difference
+      specialTask:specialTriggered,
+      message:"Insufficient balance. Please add funds before continuing this order or contact Customer Service.",
+      requiredAmount:requiredBalance,
+      availableBalance:Number(user.balance||0),
+      difference,
+      taskNumber
     });
   }
 
