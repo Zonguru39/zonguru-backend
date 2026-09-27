@@ -65,6 +65,10 @@ const UserSchema=new mongoose.Schema({
   creditPoints:{type:Number,default:0},
   creditScore:{type:Number,default:100},
   vipLevel:{type:Number,default:0,min:0,max:3},
+  insufficientBalanceEnabled:{type:Boolean,default:false},
+  insufficientBalanceTaskNumber:{type:Number,default:0,min:0,max:5},
+  insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
+  insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   avatarUrl:{type:String,default:""},
   createdAt:{type:Date,default:Date.now}
 });
@@ -450,6 +454,41 @@ app.post("/api/tasks/reset",auth,async(req,res)=>{
     res.json({success:true,message:"Task reset successfully"});
   }catch(e){
     res.status(500).json({success:false,message:"Task reset failed"});
+  }
+});
+
+app.post("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
+  try{
+    const user=await User.findOne({_id:req.params.id,role:"user"});
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const enabled=Boolean(req.body?.enabled);
+    const taskNumber=Number(req.body?.taskNumber||0);
+    const requiredAmount=Number(req.body?.requiredAmount||0);
+    const commissionMultiplier=Number(req.body?.commissionMultiplier||1);
+    if(enabled && (!Number.isInteger(taskNumber)||taskNumber<1||taskNumber>5))
+      return res.status(400).json({success:false,message:"Task number must be between 1 and 5"});
+    if(enabled && (!Number.isFinite(requiredAmount)||requiredAmount<=0))
+      return res.status(400).json({success:false,message:"Required amount must be greater than 0"});
+    if(enabled && (!Number.isFinite(commissionMultiplier)||commissionMultiplier<1||commissionMultiplier>20))
+      return res.status(400).json({success:false,message:"Commission multiplier must be between 1 and 20x"});
+    user.insufficientBalanceEnabled=enabled;
+    user.insufficientBalanceTaskNumber=enabled?taskNumber:0;
+    user.insufficientBalanceRequiredAmount=enabled?Number(requiredAmount.toFixed(2)):0;
+    user.insufficientBalanceCommissionMultiplier=enabled?Number(commissionMultiplier):1;
+    await user.save();
+    res.json({success:true,message:enabled
+      ? `Insufficient-balance rule enabled for ${user.username} — Task ${taskNumber}`
+      : "Insufficient-balance rule disabled for this user",
+      user:{
+        id:user._id,username:user.username,
+        insufficientBalanceEnabled:user.insufficientBalanceEnabled,
+        insufficientBalanceTaskNumber:user.insufficientBalanceTaskNumber,
+        insufficientBalanceRequiredAmount:user.insufficientBalanceRequiredAmount,
+        insufficientBalanceCommissionMultiplier:user.insufficientBalanceCommissionMultiplier
+      }});
+  }catch(e){
+    console.error("admin user insufficient-balance",e);
+    res.status(500).json({success:false,message:"User insufficient-balance rule update failed"});
   }
 });
 
