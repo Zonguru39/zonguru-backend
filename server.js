@@ -500,7 +500,7 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
       success:false,
       insufficientBalance:true,
       specialTask:specialTriggered,
-      message:"Insufficient balance. Please add funds before continuing this order or contact Customer Service.",
+      message:"လက်ကျန်ငွေမလုံလောက်ပါ။ Customer Service ကို ဆက်သွယ်ပါ။",
       requiredAmount:requiredBalance,
       availableBalance:Number(user.balance||0),
       difference,
