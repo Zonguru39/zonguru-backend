@@ -406,15 +406,21 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
       reviewText,status:"completed"
     });
 
-    user.balance=Number(user.balance||0)+commission;
-    user.totalProfit=Number(user.totalProfit||0)+commission;
-    await user.save();
+    // Update balance with an atomic MongoDB increment.
+    // This avoids full User validation so older accounts that do not have
+    // every newer profile field can still complete orders and receive profit.
+    const updatedUser=await User.findOneAndUpdate(
+      {_id:user._id},
+      {$inc:{balance:commission,totalProfit:commission}},
+      {new:true,runValidators:false}
+    );
+    if(!updatedUser)throw new Error("Unable to update account balance");
 
     const completed=task.completedIds.length;
     res.json({
       success:true,completed,total:5,taskComplete:completed>=5,
-      commission,creditedBalance:Number(user.balance||0),
-      totalProfit:Number(user.totalProfit||0),
+      commission,creditedBalance:Number(updatedUser.balance||0),
+      totalProfit:Number(updatedUser.totalProfit||0),
       reviewText
     });
   }catch(e){
