@@ -314,7 +314,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
             Number(user.insufficientBalanceRequiredAmount||0)>0;
           const specialForThisTask=userRuleForThisTask;
           const multiplier=userRuleForThisTask
-            ? Number(user.insufficientBalanceCommissionMultiplier||1)
+            ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
             : 1;
           return {
           id:p._id,name:p.name,description:p.description,category:p.category,
@@ -323,6 +323,10 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
           specialTask:Boolean(p.specialTask),specialTaskNumber:Number(p.specialTaskNumber||0),
           specialRequiredAmount:Number(p.specialRequiredAmount||0),
           specialCommissionMultiplier:Number(p.specialCommissionMultiplier||1),
+          insufficientBalance:userRuleForThisTask,
+          insufficientBalanceTaskNumber:userRuleForThisTask?nextTaskNumber:0,
+          insufficientBalanceRequiredAmount:userRuleForThisTask?Number(user.insufficientBalanceRequiredAmount||0):0,
+          insufficientBalanceCommissionMultiplier:userRuleForThisTask?multiplier:1,
           completed:completed.has(String(p._id)),
           reviewSuggestions:getReviewSuggestions(p)
           };
