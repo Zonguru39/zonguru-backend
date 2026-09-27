@@ -85,6 +85,8 @@ const InviteCodeSchema=new mongoose.Schema({
   active:{type:Boolean,default:true},
   usedBy:{type:mongoose.Schema.Types.ObjectId,default:null},
   usedAt:{type:Date,default:null},
+  useCount:{type:Number,default:0,min:0},
+  lastUsedAt:{type:Date,default:null},
   createdAt:{type:Date,default:Date.now}
 },{collection:"invite_codes",strict:false});
 const InviteCode=mongoose.model("InviteCode",InviteCodeSchema);
@@ -192,16 +194,23 @@ app.post("/api/auth/register",async(req,res)=>{
     if(await User.findOne({username}))return res.status(409).json({success:false,message:"Username is already registered"});
     if(await User.findOne({email}))return res.status(409).json({success:false,message:"This email is already registered"});
 
-    const adminInvite=await InviteCode.findOne({code:inviteCode,active:true});
+    // Admin invite codes are reusable until the main admin explicitly revokes them.
+    // Existing one-time codes that were previously consumed (active=false + usedAt)
+    // are also restored to reusable status by this rule.
+    const adminInvite=await InviteCode.findOne({
+      code:inviteCode,
+      $or:[
+        {active:true},
+        {active:false,usedAt:{$ne:null}}
+      ]
+    });
     let referrer=null;
     let ownerAdminId=null;
     let ownerAdminUsername="";
-    let usedAdminInvite=null;
 
     if(adminInvite){
       ownerAdminId=adminInvite.ownerAdminId||null;
       ownerAdminUsername=adminInvite.ownerAdminUsername||"";
-      usedAdminInvite=adminInvite;
     }else{
       referrer=await User.findOne({referralCode:inviteCode,role:"user"});
       if(!referrer)return res.status(400).json({success:false,message:"Invalid or inactive invite code"});
@@ -223,11 +232,16 @@ app.post("/api/auth/register",async(req,res)=>{
       referralBonus:referrer?20:0
     });
 
-    if(usedAdminInvite){
-      usedAdminInvite.usedBy=user._id;
-      usedAdminInvite.usedAt=new Date();
-      usedAdminInvite.active=false;
-      await usedAdminInvite.save();
+    if(adminInvite){
+      // Track usage without consuming the shared code.
+      // $inc is atomic for a single MongoDB document.
+      await InviteCode.updateOne(
+        {_id:adminInvite._id},
+        {
+          $inc:{useCount:1},
+          $set:{usedBy:adminInvite.usedBy||user._id,lastUsedAt:new Date()}
+        }
+      );
     }
 
     if(referrer){
@@ -775,14 +789,22 @@ app.get("/api/auth/validate-invite/:code",async(req,res)=>{
   try{
     const code=String(req.params.code||"").trim().toUpperCase();
     if(!code)return res.json({success:true,valid:false,message:"Invite code is required"});
-    const adminInvite=await InviteCode.findOne({code,active:true}).select("code ownerAdminUsername");
+    const adminInvite=await InviteCode.findOne({
+      code,
+      $or:[
+        {active:true},
+        {active:false,usedAt:{$ne:null}}
+      ]
+    }).select("code ownerAdminUsername useCount active");
     if(adminInvite){
       return res.json({
         success:true,valid:true,type:"admin",
         code:adminInvite.code,
         ownerAdminUsername:adminInvite.ownerAdminUsername||"",
         bonus:0,
-        message:"Valid platform invite code."
+        reusable:true,
+        useCount:Number(adminInvite.useCount||0),
+        message:"Valid platform invite code. This code can be used by multiple people until revoked."
       });
     }
     const referrer=await User.findOne({referralCode:code,role:"user"}).select("username referralCode");
