@@ -70,9 +70,23 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   avatarUrl:{type:String,default:""},
+  ownerAdminId:{type:String,default:null,index:true},
+  ownerAdminUsername:{type:String,default:""},
+  inviteCodeUsed:{type:String,default:""},
   recentTaskProductIds:[mongoose.Schema.Types.ObjectId],
   createdAt:{type:Date,default:Date.now}
 });
+const InviteCodeSchema=new mongoose.Schema({
+  code:{type:String,unique:true,index:true},
+  ownerAdminId:{type:String,default:null},
+  ownerAdminUsername:{type:String,default:""},
+  active:{type:Boolean,default:true},
+  usedBy:{type:mongoose.Schema.Types.ObjectId,default:null},
+  usedAt:{type:Date,default:null},
+  createdAt:{type:Date,default:Date.now}
+},{collection:"invite_codes",strict:false});
+const InviteCode=mongoose.model("InviteCode",InviteCodeSchema);
+
 const ProductSchema=new mongoose.Schema({
   name:String,description:String,category:String,
   price:{type:Number,default:0},profitRate:{type:Number,default:0},
@@ -145,47 +159,37 @@ app.post("/api/auth/register",async(req,res)=>{
     const email=emailOf(body.email);
     const phone=String(body.phone||"").trim();
     const password=String(body.password||"");
+    const inviteCode=String(body.inviteCode||"").trim().toUpperCase();
 
-    if(username.length<3)
-      return res.status(400).json({success:false,message:"Username must be at least 3 characters"});
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-      return res.status(400).json({success:false,message:"Enter a valid email address"});
-    if(phone.replace(/\D/g,"").length<6)
-      return res.status(400).json({success:false,message:"Enter a valid phone number"});
-    if(password.length<6)
-      return res.status(400).json({success:false,message:"Password must be at least 6 characters"});
+    if(username.length<3)return res.status(400).json({success:false,message:"Username must be at least 3 characters"});
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return res.status(400).json({success:false,message:"Enter a valid email address"});
+    if(phone.replace(/\D/g,"").length<6)return res.status(400).json({success:false,message:"Enter a valid phone number"});
+    if(password.length<6)return res.status(400).json({success:false,message:"Password must be at least 6 characters"});
+    if(!inviteCode)return res.status(400).json({success:false,message:"Invite code is required to register"});
 
-    if(await User.findOne({username}))
-      return res.status(409).json({success:false,message:"Username is already registered"});
-    if(await User.findOne({email}))
-      return res.status(409).json({success:false,message:"This email is already registered"});
+    const invite=await InviteCode.findOne({code:inviteCode,active:true});
+    if(!invite)return res.status(400).json({success:false,message:"Invalid or inactive invite code"});
+    if(await User.findOne({username}))return res.status(409).json({success:false,message:"Username is already registered"});
+    if(await User.findOne({email}))return res.status(409).json({success:false,message:"This email is already registered"});
 
     let referralCode;
-    do{
-      referralCode="ZG"+crypto.randomBytes(4).toString("hex").toUpperCase();
-    }while(await User.findOne({referralCode}));
+    do{referralCode="ZG"+crypto.randomBytes(4).toString("hex").toUpperCase();}
+    while(await User.findOne({referralCode}));
 
     const user=await User.create({
-      username,email,phone,emailVerified:true,
-      passwordHash:hashPassword(password),referralCode
+      username,email,phone,emailVerified:true,passwordHash:hashPassword(password),
+      referralCode,ownerAdminId:invite.ownerAdminId||null,ownerAdminUsername:invite.ownerAdminUsername||"",inviteCodeUsed:invite.code
     });
 
-    await Message.create({
-      userId:user._id,
-      subject:"Welcome to Zonguru",
-      text:"Your Zonguru account has been created successfully."
-    });
+    invite.usedBy=user._id;invite.usedAt=new Date();invite.active=false;await invite.save();
 
-    res.json({
-      success:true,message:"Registration successful",
-      token:signUser(user),user:publicUser(user)
-    });
+    await Message.create({userId:user._id,subject:"Welcome to Zonguru",text:"Your Zonguru account has been created successfully."});
+    res.json({success:true,message:"Registration successful",token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("register",e);
     res.status(500).json({success:false,message:e.message||"Registration failed"});
   }
 });
-
 /* Login: username OR email + password */
 app.post("/api/auth/login",async(req,res)=>{
   try{
