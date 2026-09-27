@@ -73,6 +73,10 @@ const ProductSchema=new mongoose.Schema({
   price:{type:Number,default:0},profitRate:{type:Number,default:0},
   image:String,
   balanceGuardEnabled:{type:Boolean,default:false},
+  specialTask:{type:Boolean,default:false},
+  specialTaskNumber:{type:Number,default:0,min:0,max:5},
+  specialRequiredAmount:{type:Number,default:0,min:0},
+  specialCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   requiredVip:{type:Number,default:0,min:0,max:3},
   minBalance:{type:Number,default:0},
   maxBalance:{type:Number,default:0},
@@ -299,7 +303,11 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         products:products.map(p=>({
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitAmount:Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100,
-          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),completed:completed.has(String(p._id)),
+          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),
+          specialTask:Boolean(p.specialTask),specialTaskNumber:Number(p.specialTaskNumber||0),
+          specialRequiredAmount:Number(p.specialRequiredAmount||0),
+          specialCommissionMultiplier:Number(p.specialCommissionMultiplier||1),
+          completed:completed.has(String(p._id)),
           reviewSuggestions:getReviewSuggestions(p)
         }))
       }
@@ -355,9 +363,31 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const amount=Number(product.price||0);
     const rate=Number(product.profitRate||product.dailyRate||0);
     if(amount<=0)return res.status(400).json({success:false,message:"Product value is not configured"});
-    if(product.balanceGuardEnabled && Number(user.balance||0)<amount){
-      const difference=amount-Number(user.balance||0);
-      return res.status(400).json({success:false,insufficientBalance:true,message:"Insufficient balance",requiredAmount:amount,availableBalance:Number(user.balance||0),difference});
+
+    // Safe insufficient-balance trigger:
+    // an admin can mark one task number with a required amount. The order is
+    // blocked until the user has enough available balance. The balance is
+    // never changed to a negative value and no deposit is auto-created.
+    const taskNumber=Number(task.completedIds.length||0)+1;
+    const specialTriggered=Boolean(product.specialTask) &&
+      Number(product.specialTaskNumber||0)===taskNumber &&
+      Number(product.specialRequiredAmount||0)>0;
+    const requiredBalance=specialTriggered
+      ? Number(product.specialRequiredAmount)
+      : (product.balanceGuardEnabled ? amount : 0);
+
+    if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
+      const difference=requiredBalance-Number(user.balance||0);
+      return res.status(400).json({
+        success:false,
+        insufficientBalance:true,
+        specialTask: specialTriggered,
+        message:"Insufficient balance. Please add funds before continuing this order or contact Customer Service.",
+        requiredAmount:requiredBalance,
+        availableBalance:Number(user.balance||0),
+        difference,
+        taskNumber
+      });
     }
 
     const reviewText=String(req.body?.reviewText||"").trim();
