@@ -318,20 +318,21 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
       else if(balanceForTier<2000){tierMin=1;tierMax=3;}
       else if(balanceForTier<10000){tierMin=2;tierMax=4;}
       else {tierMin=3;tierMax=5;}
-      let sampled=await Product.aggregate([
-        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},valueTier:{$gte:tierMin,$lte:tierMax},_id:{$nin:excluded}}},
-        {$sample:{size:1}}
-      ]);
-      if(!sampled.length)sampled=await Product.aggregate([
-        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},_id:{$nin:excluded}}},
-        {$sample:{size:1}}
-      ]);
-      if(!sampled.length)sampled=await Product.aggregate([
-        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}},
-        {$sample:{size:1}}
-      ]);
-      if(!sampled.length)return res.json({success:true,task:{total:5,completed,products:[]}});
-      current=await Product.findById(sampled[0]._id);
+      const eligibleBase={active:true,requiredVip:{$lte:Number(user.vipLevel||0)}};
+      const chooseRandom=async(filter)=>{
+        const list=await Product.find(filter).select("_id").lean();
+        if(!list.length)return null;
+        return list[Math.floor(Math.random()*list.length)]._id;
+      };
+      let selectedId=await chooseRandom({...eligibleBase,valueTier:{$gte:tierMin,$lte:tierMax},_id:{$nin:excluded}});
+      if(!selectedId)selectedId=await chooseRandom({...eligibleBase,_id:{$nin:excluded}});
+      if(!selectedId)selectedId=await chooseRandom(eligibleBase);
+      if(!selectedId){
+        await ensureProductCatalog();
+        selectedId=await chooseRandom(eligibleBase);
+      }
+      if(!selectedId)return res.json({success:true,task:{total:5,completed,products:[]}});
+      current=await Product.findById(selectedId);
       if(current){
         user.recentTaskProductIds=[...(user.recentTaskProductIds||[]),current._id].slice(-25);
         await user.save();
