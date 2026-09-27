@@ -292,68 +292,202 @@ app.get("/api/products",auth,async(req,res)=>{
 
 app.get("/api/tasks/current",auth,async(req,res)=>{
   try{
-    let task=await TaskProgress.findOne({userId:req.auth.id});
     const user=await User.findById(req.auth.id);
     if(!user)return res.status(404).json({success:false,message:"User not found"});
-    if(Number(user.vipLevel||0)<1)return res.json({success:true,task:null,locked:true,requiredVip:1,message:"VIP 1 is required to order products"});
-    const completedIds=Array.isArray(task?.completedIds)?task.completedIds:[];
+    const vipLevel=Number(user.vipLevel||0);
+    if(vipLevel<1)return res.json({success:true,task:null,locked:true,requiredVip:1,message:"VIP 1 is required to order products"});
+
+    let task=await TaskProgress.findOne({userId:user._id});
+    if(!task){
+      task=await TaskProgress.create({
+        userId:user._id,
+        productIds:[],
+        completedIds:[],
+        recentProductIds:[],
+        currentProductId:null,
+        currentProductAmount:0,
+        currentTaskNumber:1,
+        updatedAt:new Date()
+      });
+    }
+
+    const completedIds=Array.isArray(task.completedIds)?task.completedIds:[];
     const completed=completedIds.length;
-    if(completed>=5)return res.json({success:true,task:{total:5,completed:5,products:[]}});
-    if(!task)task=await TaskProgress.create({userId:req.auth.id,productIds:[],completedIds:[],recentProductIds:[],currentProductId:null,currentProductAmount:0,currentTaskNumber:1,updatedAt:new Date()});
+    if(completed>=5){
+      return res.json({success:true,task:{total:5,completed:5,currentTaskNumber:5,products:[]}});
+    }
+
+    const taskNumber=completed+1;
+    const userRuleTriggered=
+      Boolean(user.insufficientBalanceEnabled) &&
+      Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
+      Number(user.insufficientBalanceRequiredAmount||0)>0;
+    const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+    const balance=Number(user.balance||0);
+
     let current=null;
     if(task.currentProductId){
-      current=await Product.findOne({_id:task.currentProductId,active:true,requiredVip:{$lte:Number(user.vipLevel||0)}});
-      if(!current){task.currentProductId=null;task.currentProductAmount=0;}
+      current=await Product.findOne({
+        _id:task.currentProductId,
+        active:true,
+        requiredVip:{$lte:vipLevel}
+      });
+      if(!current){
+        task.currentProductId=null;
+        task.currentProductAmount=0;
+        task.currentTaskNumber=0;
+      }
     }
-    const taskNumber=completed+1;
-    const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
-    const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+
+    // If the admin rule was changed after this product was created,
+    // refresh the current amount so Task 3 immediately reflects the rule.
+    if(current && userRuleTriggered){
+      const desiredAmount=Math.round((balance+shortfall)*100)/100;
+      if(Math.abs(Number(task.currentProductAmount||0)-desiredAmount)>0.009){
+        task.currentProductAmount=desiredAmount;
+        task.currentTaskNumber=taskNumber;
+        task.updatedAt=new Date();
+        await task.save();
+      }
+    }
+
     if(!current){
       const recent=(task.recentProductIds||[]).map(String);
       const userRecent=(user.recentTaskProductIds||[]).map(String);
       const excluded=new Set([...recent,...completedIds.map(String),...userRecent]);
-      const balanceForTier=Number(user.balance||0);
+
+      let candidates=await Product.find({
+        active:true,
+        requiredVip:{$lte:vipLevel}
+      }).lean();
+
+      // If a fresh deployment has not run catalog seeding yet, seed it now.
+      if(!candidates.length){
+        await ensureProductCatalog();
+        candidates=await Product.find({
+          active:true,
+          requiredVip:{$lte:vipLevel}
+        }).lean();
+      }
+
+      if(!candidates.length){
+        return res.status(503).json({
+          success:false,
+          code:"PRODUCT_CATALOG_EMPTY",
+          message:"No active products are available right now. Please try again."
+        });
+      }
+
+      const balanceForTier=balance;
       let tierMin=1,tierMax=5;
       if(balanceForTier<500){tierMin=1;tierMax=2;}
       else if(balanceForTier<2000){tierMin=1;tierMax=3;}
       else if(balanceForTier<10000){tierMin=2;tierMax=4;}
       else {tierMin=3;tierMax=5;}
 
-      // Normal Mongoose query keeps schema defaults for older products.
-      let candidates=await Product.find({active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}).lean();
       let tierCandidates=candidates.filter(p=>{
         const tier=Math.max(1,Math.min(5,Number(p.valueTier||3)));
         return tier>=tierMin && tier<=tierMax && !excluded.has(String(p._id));
       });
       if(!tierCandidates.length)tierCandidates=candidates.filter(p=>!excluded.has(String(p._id)));
       if(!tierCandidates.length)tierCandidates=candidates;
-      if(!tierCandidates.length)return res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[]}});
+
       const picked=tierCandidates[Math.floor(Math.random()*tierCandidates.length)];
       current=await Product.findById(picked._id);
-      if(!current)return res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[]}});
-
-      if(current){
-        user.recentTaskProductIds=[...(user.recentTaskProductIds||[]),current._id].slice(-25);
-        await user.save();
+      if(!current){
+        return res.status(503).json({
+          success:false,
+          code:"PRODUCT_SELECTION_FAILED",
+          message:"Unable to select a product right now. Please try again."
+        });
       }
-      const balance=Number(user.balance||0);
+
+      const tier=Math.max(1,Math.min(5,Number(current.valueTier||3)));
+      const tierRanges={
+        1:[0.15,0.45],
+        2:[0.25,0.60],
+        3:[0.35,0.72],
+        4:[0.45,0.82],
+        5:[0.55,0.90]
+      };
+
       let amount=0;
-      if(userRuleTriggered)amount=Math.round((balance+shortfall)*100)/100;
-      else{
-        const tier=Number(current.valueTier||3);
-        const tierRanges={1:[0.15,0.45],2:[0.25,0.60],3:[0.35,0.72],4:[0.45,0.82],5:[0.55,0.90]};
+      if(userRuleTriggered){
+        amount=Math.round((balance+shortfall)*100)/100;
+      }else{
         const range=tierRanges[tier]||tierRanges[3];
-        const upper=Math.max(0,balance*range[1]),lower=Math.max(0,Math.min(upper,balance*range[0]));
-        amount=balance>0?Math.round((lower+Math.random()*Math.max(0,upper-lower))*100)/100:0;
+        const upper=Math.max(0,balance*range[1]);
+        const lower=Math.max(0,Math.min(upper,balance*range[0]));
+        amount=balance>0
+          ? Math.round((lower+Math.random()*Math.max(0,upper-lower))*100)/100
+          : 0;
       }
       if(amount<=0)amount=Math.round(Math.max(0,balance*0.5)*100)/100;
-      task.currentProductId=current._id;task.currentProductAmount=amount;task.currentTaskNumber=taskNumber;task.updatedAt=new Date();await task.save();
+
+      task.currentProductId=current._id;
+      task.currentProductAmount=amount;
+      task.currentTaskNumber=taskNumber;
+      task.recentProductIds=[...(task.recentProductIds||[]),current._id].slice(-15);
+      task.updatedAt=new Date();
+      await task.save();
+
+      // Do not let an optional anti-repeat history write prevent the task
+      // from loading for the user.
+      try{
+        user.recentTaskProductIds=[...(user.recentTaskProductIds||[]),current._id].slice(-25);
+        await user.save();
+      }catch(historyError){
+        console.error("task recent-product history",historyError);
+      }
     }
-    const baseProfit=Number(task.currentProductAmount||0)*Number(current.profitRate||current.dailyRate||0)/100;
-    const multiplier=userRuleTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1;
-    const productPayload={id:current._id,name:current.name,description:current.description,category:current.category,price:Number(task.currentProductAmount||0),profitRate:Number(current.profitRate||current.dailyRate||0),profitAmount:baseProfit*multiplier,image:current.image||"",requiredVip:Number(current.requiredVip||0),balanceGuardEnabled:Boolean(current.balanceGuardEnabled),specialTask:Boolean(current.specialTask),specialTaskNumber:Number(current.specialTaskNumber||0),specialRequiredAmount:Number(current.specialRequiredAmount||0),specialCommissionMultiplier:Number(current.specialCommissionMultiplier||1),insufficientBalance:userRuleTriggered,insufficientBalanceTaskNumber:userRuleTriggered?taskNumber:0,insufficientBalanceShortfall:userRuleTriggered?shortfall:0,insufficientBalanceRequiredAmount:userRuleTriggered?shortfall:0,insufficientBalanceCommissionMultiplier:userRuleTriggered?multiplier:1,completed:false,reviewSuggestions:getReviewSuggestions(current)};
-    res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[productPayload]}});
-  }catch(e){console.error("task current",e);res.status(500).json({success:false,message:"Unable to load task"});}
+
+    const rate=Number(current.profitRate||current.dailyRate||0);
+    const baseProfit=Number(task.currentProductAmount||0)*rate/100;
+    const multiplier=userRuleTriggered
+      ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
+      : 1;
+
+    const productPayload={
+      id:current._id,
+      name:current.name,
+      description:current.description,
+      category:current.category,
+      price:Number(task.currentProductAmount||0),
+      profitRate:rate,
+      profitAmount:baseProfit*multiplier,
+      image:current.image||"",
+      requiredVip:Number(current.requiredVip||0),
+      balanceGuardEnabled:Boolean(current.balanceGuardEnabled),
+      specialTask:Boolean(current.specialTask),
+      specialTaskNumber:Number(current.specialTaskNumber||0),
+      specialRequiredAmount:Number(current.specialRequiredAmount||0),
+      specialCommissionMultiplier:Number(current.specialCommissionMultiplier||1),
+      insufficientBalance:userRuleTriggered,
+      insufficientBalanceTaskNumber:userRuleTriggered?taskNumber:0,
+      insufficientBalanceShortfall:userRuleTriggered?shortfall:0,
+      insufficientBalanceRequiredAmount:userRuleTriggered?shortfall:0,
+      insufficientBalanceCommissionMultiplier:userRuleTriggered?multiplier:1,
+      completed:false,
+      reviewSuggestions:getReviewSuggestions(current)
+    };
+
+    res.json({
+      success:true,
+      task:{
+        total:5,
+        completed,
+        currentTaskNumber:taskNumber,
+        products:[productPayload]
+      }
+    });
+  }catch(e){
+    console.error("task current",e?.stack||e);
+    res.status(500).json({
+      success:false,
+      code:"TASK_LOAD_FAILED",
+      message:"Unable to load task. Please try again."
+    });
+  }
 });
 function getReviewSuggestions(product){
   const text=((product?.name||"")+" "+(product?.description||"")+" "+(product?.category||"")).toLowerCase();
