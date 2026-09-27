@@ -70,6 +70,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   avatarUrl:{type:String,default:""},
+  recentTaskProductIds:[mongoose.Schema.Types.ObjectId],
   createdAt:{type:Date,default:Date.now}
 });
 const ProductSchema=new mongoose.Schema({
@@ -86,7 +87,8 @@ const ProductSchema=new mongoose.Schema({
   maxBalance:{type:Number,default:0},
   minAmount:Number,maxAmount:Number,
   dailyRate:Number,durationDays:Number,
-  active:{type:Boolean,default:true}
+  active:{type:Boolean,default:true},
+  valueTier:{type:Number,default:3,min:1,max:5}
 });
 const TransactionSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,type:String,amount:Number,
@@ -308,16 +310,40 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
     if(!current){
       const recent=(task.recentProductIds||[]).map(String);
-      const excluded=[...recent,...completedIds.map(String)];
-      let sampled=await Product.aggregate([{$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},_id:{$nin:excluded}}},{$sample:{size:1}}]);
-      if(!sampled.length)sampled=await Product.aggregate([{$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}},{$sample:{size:1}}]);
+      const userRecent=(user.recentTaskProductIds||[]).map(String);
+      const excluded=[...new Set([...recent,...completedIds.map(String),...userRecent])];
+      const balanceForTier=Number(user.balance||0);
+      let tierMin=1,tierMax=5;
+      if(balanceForTier<500){tierMin=1;tierMax=2;}
+      else if(balanceForTier<2000){tierMin=1;tierMax=3;}
+      else if(balanceForTier<10000){tierMin=2;tierMax=4;}
+      else {tierMin=3;tierMax=5;}
+      let sampled=await Product.aggregate([
+        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},valueTier:{$gte:tierMin,$lte:tierMax},_id:{$nin:excluded}}},
+        {$sample:{size:1}}
+      ]);
+      if(!sampled.length)sampled=await Product.aggregate([
+        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},_id:{$nin:excluded}}},
+        {$sample:{size:1}}
+      ]);
+      if(!sampled.length)sampled=await Product.aggregate([
+        {$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}},
+        {$sample:{size:1}}
+      ]);
       if(!sampled.length)return res.json({success:true,task:{total:5,completed,products:[]}});
       current=await Product.findById(sampled[0]._id);
+      if(current){
+        user.recentTaskProductIds=[...(user.recentTaskProductIds||[]),current._id].slice(-25);
+        await user.save();
+      }
       const balance=Number(user.balance||0);
       let amount=0;
       if(userRuleTriggered)amount=Math.round((balance+shortfall)*100)/100;
       else{
-        const upper=Math.max(0,balance*0.90),lower=Math.max(0,Math.min(upper,balance*0.25));
+        const tier=Number(current.valueTier||3);
+        const tierRanges={1:[0.15,0.45],2:[0.25,0.60],3:[0.35,0.72],4:[0.45,0.82],5:[0.55,0.90]};
+        const range=tierRanges[tier]||tierRanges[3];
+        const upper=Math.max(0,balance*range[1]),lower=Math.max(0,Math.min(upper,balance*range[0]));
         amount=balance>0?Math.round((lower+Math.random()*Math.max(0,upper-lower))*100)/100:0;
       }
       if(amount<=0)amount=Math.round(Math.max(0,balance*0.5)*100)/100;
@@ -618,13 +644,21 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
 });
 
 async function ensureProductCatalog(){
-  const activeCount=await Product.countDocuments({active:true});
-  if(activeCount>=60)return;
   const catalogNames=["Premium Stainless Steel Screw Set","CAT6 Flat Patch Cord","Aluminum Fountain Pen","Waterproof Self Adhesive Wallpaper","Smart Home Accessory","Cordless Power Drill","Rechargeable LED Work Light","USB-C Fast Charging Cable","Wireless Mouse","Mechanical Keyboard","Laptop Stand","Phone Holder","Bluetooth Speaker","Smart LED Bulb","Portable Power Bank","Digital Kitchen Scale","Stainless Steel Water Bottle","Non Slip Floor Mat","Microfiber Cleaning Cloth","Storage Organizer Box","Desk Lamp","Notebook Set","Ballpoint Pen Set","A4 Document Folder","Adhesive Tape Set","Precision Screwdriver Kit","Measuring Tape","Mini Hand Tool Set","Safety Work Gloves","Protective Face Shield","Cable Management Clips","HDMI Cable","USB Hub","Ethernet Network Adapter","Wireless Door Sensor","Smart Plug","Motion Sensor Light","Desk Organizer","Travel Adapter","Phone Charging Stand","Tablet Stand","Computer Webcam","Mini Tripod","Reusable Shopping Bag","Kitchen Storage Container","Silicone Spatula Set","Non Stick Pan","Coffee Mug Set","Kitchen Knife Organizer","Bathroom Storage Rack","Laundry Storage Bag","Foldable Storage Basket","Home Decoration Frame","Curtain Tieback Set","Wall Hook Set","Furniture Handle Set","Door Stopper Set","Garden Hand Tool Set","Plant Watering Bottle","LED String Light","Outdoor Utility Rope","Compact Tool Box","Multi Purpose Cleaning Brush","Reusable Food Cover Set","Portable Sewing Kit","Travel Toiletry Organizer","Document Storage Case","Cable Tester","Mini Digital Thermometer","Rechargeable Flashlight","Magnetic Tool Holder"];
   const existing=await Product.find({name:{$in:catalogNames}}).select("name"),have=new Set(existing.map(p=>p.name));
   const images=["https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1585336261022-680e295ce5b4?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558008258-3256797b43f3?auto=format&fit=crop&w=900&q=80"];
-  const add=catalogNames.filter(n=>!have.has(n)).map((name,i)=>({name,description:"Marketplace product review task item.",category:"General",price:0,profitRate:8+(i%6),image:images[i%images.length],requiredVip:1,active:true}));
+  const add=catalogNames.filter(n=>!have.has(n)).map((name,i)=>({
+    name,description:"Marketplace product review task item.",category:"General",price:0,
+    profitRate:8+(i%6),image:images[i%images.length],requiredVip:1,active:true,
+    valueTier:1+(i%5)
+  }));
   if(add.length)await Product.insertMany(add);
+  const missingTier=await Product.find({name:{$in:catalogNames},$or:[{valueTier:{$exists:false}},{valueTier:{$lt:1}},{valueTier:{$gt:5}}]});
+  for(const p of missingTier){
+    const idx=catalogNames.indexOf(p.name);
+    p.valueTier=idx>=0?1+(idx%5):3;
+    await p.save();
+  }
 }
 
 async function start(){
