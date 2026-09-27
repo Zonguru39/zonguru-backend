@@ -309,10 +309,16 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         products:products.map(p=>{
           const nextTaskNumber=products.filter(x=>completed.has(String(x._id))).length+1;
           const baseProfit=Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100;
-          const specialForThisTask=Boolean(p.specialTask) &&
+          const userRuleForThisTask=Boolean(user.insufficientBalanceEnabled) &&
+            Number(user.insufficientBalanceTaskNumber||0)===nextTaskNumber &&
+            Number(user.insufficientBalanceRequiredAmount||0)>0;
+          const productRuleForThisTask=Boolean(p.specialTask) &&
             Number(p.specialTaskNumber||0)===nextTaskNumber &&
             Number(p.specialRequiredAmount||0)>0;
-          const multiplier=specialForThisTask ? Number(p.specialCommissionMultiplier||1) : 1;
+          const specialForThisTask=userRuleForThisTask || productRuleForThisTask;
+          const multiplier=userRuleForThisTask
+            ? Number(user.insufficientBalanceCommissionMultiplier||1)
+            : (productRuleForThisTask ? Number(p.specialCommissionMultiplier||1) : 1);
           return {
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitAmount:baseProfit*multiplier,
