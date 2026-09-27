@@ -312,13 +312,10 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
           const userRuleForThisTask=Boolean(user.insufficientBalanceEnabled) &&
             Number(user.insufficientBalanceTaskNumber||0)===nextTaskNumber &&
             Number(user.insufficientBalanceRequiredAmount||0)>0;
-          const productRuleForThisTask=Boolean(p.specialTask) &&
-            Number(p.specialTaskNumber||0)===nextTaskNumber &&
-            Number(p.specialRequiredAmount||0)>0;
-          const specialForThisTask=userRuleForThisTask || productRuleForThisTask;
+          const specialForThisTask=userRuleForThisTask;
           const multiplier=userRuleForThisTask
             ? Number(user.insufficientBalanceCommissionMultiplier||1)
-            : (productRuleForThisTask ? Number(p.specialCommissionMultiplier||1) : 1);
+            : 1;
           return {
           id:p._id,name:p.name,description:p.description,category:p.category,
           price:Number(p.price||0),profitAmount:baseProfit*multiplier,
@@ -389,11 +386,12 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     // blocked until the user has enough available balance. The balance is
     // never changed to a negative value and no deposit is auto-created.
     const taskNumber=Number(task.completedIds.length||0)+1;
-    const specialTriggered=Boolean(product.specialTask) &&
-      Number(product.specialTaskNumber||0)===taskNumber &&
-      Number(product.specialRequiredAmount||0)>0;
-    const requiredBalance=specialTriggered
-      ? Number(product.specialRequiredAmount)
+    const userRuleTriggered=Boolean(user.insufficientBalanceEnabled) &&
+      Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
+      Number(user.insufficientBalanceRequiredAmount||0)>0;
+    const specialTriggered=userRuleTriggered;
+    const requiredBalance=userRuleTriggered
+      ? Number(user.insufficientBalanceRequiredAmount)
       : (product.balanceGuardEnabled ? amount : 0);
 
     if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
@@ -414,7 +412,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
     const baseCommission=amount*(rate/100);
     const commissionMultiplier=specialTriggered
-      ? Math.max(1,Math.min(20,Number(product.specialCommissionMultiplier||1)))
+      ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
       : 1;
     const commission=baseCommission*commissionMultiplier;
 
@@ -535,15 +533,10 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   const userRuleTriggered=Boolean(user.insufficientBalanceEnabled) &&
     Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
     Number(user.insufficientBalanceRequiredAmount||0)>0;
-  const productRuleTriggered=Boolean(p.specialTask) &&
-    Number(p.specialTaskNumber||0)===taskNumber &&
-    Number(p.specialRequiredAmount||0)>0;
-  const specialTriggered=userRuleTriggered || productRuleTriggered;
+  const specialTriggered=userRuleTriggered;
   const requiredBalance=userRuleTriggered
     ? Number(user.insufficientBalanceRequiredAmount)
-    : (productRuleTriggered
-      ? Number(p.specialRequiredAmount)
-      : (p.balanceGuardEnabled ? amount : 0));
+    : (p.balanceGuardEnabled ? amount : 0);
 
   if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
     const difference=requiredBalance-Number(user.balance||0);
@@ -562,11 +555,7 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   const rate=Number(p.profitRate||p.dailyRate||0);
   const baseEstimatedProfit=amount*(rate/100);
   const commissionMultiplier=specialTriggered
-    ? Math.max(1,Math.min(20,
-        userRuleTriggered
-          ? Number(user.insufficientBalanceCommissionMultiplier||1)
-          : Number(p.specialCommissionMultiplier||1)
-      ))
+    ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
     : 1;
   const estimatedProfit=baseEstimatedProfit*commissionMultiplier;
   res.json({
