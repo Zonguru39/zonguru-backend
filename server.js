@@ -487,12 +487,18 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
 
   const taskProgress=await TaskProgress.findOne({userId:req.auth.id});
   const taskNumber=Number(taskProgress?.completedIds?.length||0)+1;
-  const specialTriggered=Boolean(p.specialTask) &&
+  const userRuleTriggered=Boolean(user.insufficientBalanceEnabled) &&
+    Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
+    Number(user.insufficientBalanceRequiredAmount||0)>0;
+  const productRuleTriggered=Boolean(p.specialTask) &&
     Number(p.specialTaskNumber||0)===taskNumber &&
     Number(p.specialRequiredAmount||0)>0;
-  const requiredBalance=specialTriggered
-    ? Number(p.specialRequiredAmount)
-    : (p.balanceGuardEnabled ? amount : 0);
+  const specialTriggered=userRuleTriggered || productRuleTriggered;
+  const requiredBalance=userRuleTriggered
+    ? Number(user.insufficientBalanceRequiredAmount)
+    : (productRuleTriggered
+      ? Number(p.specialRequiredAmount)
+      : (p.balanceGuardEnabled ? amount : 0));
 
   if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
     const difference=requiredBalance-Number(user.balance||0);
@@ -511,7 +517,11 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   const rate=Number(p.profitRate||p.dailyRate||0);
   const baseEstimatedProfit=amount*(rate/100);
   const commissionMultiplier=specialTriggered
-    ? Math.max(1,Math.min(20,Number(p.specialCommissionMultiplier||1)))
+    ? Math.max(1,Math.min(20,
+        userRuleTriggered
+          ? Number(user.insufficientBalanceCommissionMultiplier||1)
+          : Number(p.specialCommissionMultiplier||1)
+      ))
     : 1;
   const estimatedProfit=baseEstimatedProfit*commissionMultiplier;
   res.json({
