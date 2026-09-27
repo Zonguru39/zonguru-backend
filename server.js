@@ -311,28 +311,27 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     if(!current){
       const recent=(task.recentProductIds||[]).map(String);
       const userRecent=(user.recentTaskProductIds||[]).map(String);
-      const excluded=[...new Set([...recent,...completedIds.map(String),...userRecent])];
+      const excluded=new Set([...recent,...completedIds.map(String),...userRecent]);
       const balanceForTier=Number(user.balance||0);
       let tierMin=1,tierMax=5;
       if(balanceForTier<500){tierMin=1;tierMax=2;}
       else if(balanceForTier<2000){tierMin=1;tierMax=3;}
       else if(balanceForTier<10000){tierMin=2;tierMax=4;}
       else {tierMin=3;tierMax=5;}
-      const eligibleBase={active:true,requiredVip:{$lte:Number(user.vipLevel||0)}};
-      const chooseRandom=async(filter)=>{
-        const list=await Product.find(filter).select("_id").lean();
-        if(!list.length)return null;
-        return list[Math.floor(Math.random()*list.length)]._id;
-      };
-      let selectedId=await chooseRandom({...eligibleBase,valueTier:{$gte:tierMin,$lte:tierMax},_id:{$nin:excluded}});
-      if(!selectedId)selectedId=await chooseRandom({...eligibleBase,_id:{$nin:excluded}});
-      if(!selectedId)selectedId=await chooseRandom(eligibleBase);
-      if(!selectedId){
-        await ensureProductCatalog();
-        selectedId=await chooseRandom(eligibleBase);
-      }
-      if(!selectedId)return res.json({success:true,task:{total:5,completed,products:[]}});
-      current=await Product.findById(selectedId);
+
+      // Normal Mongoose query keeps schema defaults for older products.
+      let candidates=await Product.find({active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}).lean();
+      let tierCandidates=candidates.filter(p=>{
+        const tier=Math.max(1,Math.min(5,Number(p.valueTier||3)));
+        return tier>=tierMin && tier<=tierMax && !excluded.has(String(p._id));
+      });
+      if(!tierCandidates.length)tierCandidates=candidates.filter(p=>!excluded.has(String(p._id)));
+      if(!tierCandidates.length)tierCandidates=candidates;
+      if(!tierCandidates.length)return res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[]}});
+      const picked=tierCandidates[Math.floor(Math.random()*tierCandidates.length)];
+      current=await Product.findById(picked._id);
+      if(!current)return res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[]}});
+
       if(current){
         user.recentTaskProductIds=[...(user.recentTaskProductIds||[]),current._id].slice(-25);
         await user.save();
