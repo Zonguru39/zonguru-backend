@@ -108,6 +108,10 @@ const TaskProgressSchema=new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,unique:true},
   productIds:[mongoose.Schema.Types.ObjectId],
   completedIds:[mongoose.Schema.Types.ObjectId],
+  recentProductIds:[mongoose.Schema.Types.ObjectId],
+  currentProductId:{type:mongoose.Schema.Types.ObjectId,default:null},
+  currentProductAmount:{type:Number,default:0},
+  currentTaskNumber:{type:Number,default:0,min:0,max:5},
   startedAt:{type:Date,default:Date.now},
   updatedAt:{type:Date,default:Date.now}
 });
@@ -118,6 +122,9 @@ const OrderSchema=new mongoose.Schema({
   productName:String,amount:Number,profitRate:Number,commission:Number,
   baseCommission:{type:Number,default:0},
   commissionMultiplier:{type:Number,default:1},
+  availableBalance:{type:Number,default:0},
+  shortfall:{type:Number,default:0},
+  taskNumber:{type:Number,default:0},
   reviewText:{type:String,default:""},
   status:{type:String,default:"completed"},
   createdAt:{type:Date,default:Date.now}
@@ -287,58 +294,41 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     const user=await User.findById(req.auth.id);
     if(!user)return res.status(404).json({success:false,message:"User not found"});
     if(Number(user.vipLevel||0)<1)return res.json({success:true,task:null,locked:true,requiredVip:1,message:"VIP 1 is required to order products"});
-    let products=await Product.find({
-      active:true,
-      requiredVip:{$lte:Number(user.vipLevel||0)}
-    }).sort({createdAt:1}).limit(5);
-    if(!task||!task.productIds?.length){
-      if(products.length<5)return res.json({success:true,task:null,message:"At least 5 active products are required",availableProducts:products.length});
-      task=await TaskProgress.findOneAndUpdate(
-        {userId:req.auth.id},
-        {userId:req.auth.id,productIds:products.map(p=>p._id),completedIds:[],updatedAt:new Date()},
-        {upsert:true,new:true}
-      );
+    const completedIds=Array.isArray(task?.completedIds)?task.completedIds:[];
+    const completed=completedIds.length;
+    if(completed>=5)return res.json({success:true,task:{total:5,completed:5,products:[]}});
+    if(!task)task=await TaskProgress.create({userId:req.auth.id,productIds:[],completedIds:[],recentProductIds:[],currentProductId:null,currentProductAmount:0,currentTaskNumber:1,updatedAt:new Date()});
+    let current=null;
+    if(task.currentProductId){
+      current=await Product.findOne({_id:task.currentProductId,active:true,requiredVip:{$lte:Number(user.vipLevel||0)}});
+      if(!current){task.currentProductId=null;task.currentProductAmount=0;}
     }
-    products=await Product.find({_id:{$in:task.productIds}}).sort({createdAt:1});
-    const completed=new Set((task.completedIds||[]).map(String));
-    res.json({
-      success:true,
-      task:{
-        total:5,
-        completed:products.filter(p=>completed.has(String(p._id))).length,
-        products:products.map(p=>{
-          const nextTaskNumber=products.filter(x=>completed.has(String(x._id))).length+1;
-          const baseProfit=Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100;
-          const userRuleForThisTask=Boolean(user.insufficientBalanceEnabled) &&
-            Number(user.insufficientBalanceTaskNumber||0)===nextTaskNumber &&
-            Number(user.insufficientBalanceRequiredAmount||0)>0;
-          const specialForThisTask=userRuleForThisTask;
-          const multiplier=userRuleForThisTask
-            ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
-            : 1;
-          return {
-          id:p._id,name:p.name,description:p.description,category:p.category,
-          price:Number(p.price||0),profitAmount:baseProfit*multiplier,
-          image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),
-          specialTask:Boolean(p.specialTask),specialTaskNumber:Number(p.specialTaskNumber||0),
-          specialRequiredAmount:Number(p.specialRequiredAmount||0),
-          specialCommissionMultiplier:Number(p.specialCommissionMultiplier||1),
-          insufficientBalance:userRuleForThisTask,
-          insufficientBalanceTaskNumber:userRuleForThisTask?nextTaskNumber:0,
-          insufficientBalanceRequiredAmount:userRuleForThisTask?Number(user.insufficientBalanceRequiredAmount||0):0,
-          insufficientBalanceCommissionMultiplier:userRuleForThisTask?multiplier:1,
-          completed:completed.has(String(p._id)),
-          reviewSuggestions:getReviewSuggestions(p)
-          };
-        })
+    const taskNumber=completed+1;
+    const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
+    const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+    if(!current){
+      const recent=(task.recentProductIds||[]).map(String);
+      const excluded=[...recent,...completedIds.map(String)];
+      let sampled=await Product.aggregate([{$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)},_id:{$nin:excluded}}},{$sample:{size:1}}]);
+      if(!sampled.length)sampled=await Product.aggregate([{$match:{active:true,requiredVip:{$lte:Number(user.vipLevel||0)}}},{$sample:{size:1}}]);
+      if(!sampled.length)return res.json({success:true,task:{total:5,completed,products:[]}});
+      current=await Product.findById(sampled[0]._id);
+      const balance=Number(user.balance||0);
+      let amount=0;
+      if(userRuleTriggered)amount=Math.round((balance+shortfall)*100)/100;
+      else{
+        const upper=Math.max(0,balance*0.90),lower=Math.max(0,Math.min(upper,balance*0.25));
+        amount=balance>0?Math.round((lower+Math.random()*Math.max(0,upper-lower))*100)/100:0;
       }
-    });
-  }catch(e){
-    console.error("task current",e);
-    res.status(500).json({success:false,message:"Unable to load task"});
-  }
+      if(amount<=0)amount=Math.round(Math.max(0,balance*0.5)*100)/100;
+      task.currentProductId=current._id;task.currentProductAmount=amount;task.currentTaskNumber=taskNumber;task.updatedAt=new Date();await task.save();
+    }
+    const baseProfit=Number(task.currentProductAmount||0)*Number(current.profitRate||current.dailyRate||0)/100;
+    const multiplier=userRuleTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1;
+    const productPayload={id:current._id,name:current.name,description:current.description,category:current.category,price:Number(task.currentProductAmount||0),profitRate:Number(current.profitRate||current.dailyRate||0),profitAmount:baseProfit*multiplier,image:current.image||"",requiredVip:Number(current.requiredVip||0),balanceGuardEnabled:Boolean(current.balanceGuardEnabled),specialTask:Boolean(current.specialTask),specialTaskNumber:Number(current.specialTaskNumber||0),specialRequiredAmount:Number(current.specialRequiredAmount||0),specialCommissionMultiplier:Number(current.specialCommissionMultiplier||1),insufficientBalance:userRuleTriggered,insufficientBalanceTaskNumber:userRuleTriggered?taskNumber:0,insufficientBalanceShortfall:userRuleTriggered?shortfall:0,insufficientBalanceRequiredAmount:userRuleTriggered?shortfall:0,insufficientBalanceCommissionMultiplier:userRuleTriggered?multiplier:1,completed:false,reviewSuggestions:getReviewSuggestions(current)};
+    res.json({success:true,task:{total:5,completed,currentTaskNumber:taskNumber,products:[productPayload]}});
+  }catch(e){console.error("task current",e);res.status(500).json({success:false,message:"Unable to load task"});}
 });
-
 function getReviewSuggestions(product){
   const text=((product?.name||"")+" "+(product?.description||"")+" "+(product?.category||"")).toLowerCase();
   if(/pen|stationery|paper|notebook|office/.test(text))
@@ -370,208 +360,54 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
   try{
     const task=await TaskProgress.findOne({userId:req.auth.id});
     if(!task)return res.status(404).json({success:false,message:"No active task"});
-    if(!task.productIds.some(id=>String(id)===String(req.params.productId)))
-      return res.status(400).json({success:false,message:"Product is not part of the current task"});
-    if(task.completedIds.some(id=>String(id)===String(req.params.productId)))
-      return res.json({success:true,message:"Order already completed",completed:true});
-
-    const user=await User.findById(req.auth.id);
-    const product=await Product.findById(req.params.productId);
+    if(!task.currentProductId||String(task.currentProductId)!==String(req.params.productId))return res.status(400).json({success:false,message:"This is not the current task product"});
+    if((task.completedIds||[]).length>=5)return res.json({success:true,message:"Task already completed",completed:5,total:5,taskComplete:true});
+    const user=await User.findById(req.auth.id),product=await Product.findById(req.params.productId);
     if(!user||!product)return res.status(404).json({success:false,message:"User or product not found"});
-    if(Number(user.vipLevel||0)<Number(product.requiredVip||0))
-      return res.status(403).json({success:false,message:"VIP level required",requiredVip:Number(product.requiredVip||0)});
-
-    const amount=Number(product.price||0);
-    const rate=Number(product.profitRate||product.dailyRate||0);
+    if(Number(user.vipLevel||0)<Number(product.requiredVip||0))return res.status(403).json({success:false,message:"VIP level required",requiredVip:Number(product.requiredVip||0)});
+    const amount=Number(task.currentProductAmount||0),rate=Number(product.profitRate||product.dailyRate||0);
     if(amount<=0)return res.status(400).json({success:false,message:"Product value is not configured"});
-
-    // Safe insufficient-balance trigger:
-    // an admin can mark one task number with a required amount. The order is
-    // blocked until the user has enough available balance. The balance is
-    // never changed to a negative value and no deposit is auto-created.
     const taskNumber=Number(task.completedIds.length||0)+1;
-    const userRuleTriggered=Boolean(user.insufficientBalanceEnabled) &&
-      Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
-      Number(user.insufficientBalanceRequiredAmount||0)>0;
-    const specialTriggered=userRuleTriggered;
-    const requiredBalance=userRuleTriggered
-      ? Number(user.insufficientBalanceRequiredAmount)
-      : (product.balanceGuardEnabled ? amount : 0);
-
-    if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
-      const difference=requiredBalance-Number(user.balance||0);
-      return res.status(400).json({
-        success:false,
-        insufficientBalance:true,
-        specialTask: specialTriggered,
-        message:"Insufficient balance. Please contact Customer Service.",
-        requiredAmount:requiredBalance,
-        availableBalance:Number(user.balance||0),
-        difference,
-        taskNumber
-      });
+    const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
+    const specialTriggered=userRuleTriggered,configuredShortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+    const requiredBalance=userRuleTriggered?amount:(product.balanceGuardEnabled?amount:0);
+    if(requiredBalance>0&&Number(user.balance||0)<requiredBalance){
+      const availableBalance=Number(user.balance||0),difference=Math.max(0,requiredBalance-availableBalance);
+      let pending=await Order.findOne({userId:user._id,productId:product._id,taskNumber,status:"pending"}).sort({createdAt:-1});
+      if(!pending)pending=await Order.create({userId:user._id,productId:product._id,productName:product.name||"Product",amount,profitRate:rate,commission:0,baseCommission:amount*(rate/100),commissionMultiplier:1,availableBalance,shortfall:difference,taskNumber,reviewText:String(req.body?.reviewText||"").trim(),status:"pending"});
+      return res.status(400).json({success:false,insufficientBalance:true,orderStatus:"pending",orderId:pending._id,specialTask:specialTriggered,message:"Insufficient balance. Please contact Customer Service.",orderAmount:amount,availableBalance,difference,shortfall:configuredShortfall||difference,taskNumber});
     }
-
     const reviewText=String(req.body?.reviewText||"").trim();
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
-    const baseCommission=amount*(rate/100);
-    const commissionMultiplier=specialTriggered
-      ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
-      : 1;
-    const commission=baseCommission*commissionMultiplier;
-
-    task.completedIds.push(req.params.productId);
-    task.updatedAt=new Date();
-    await task.save();
-
-    await Order.create({
-      userId:req.auth.id,
-      productId:req.params.productId,
-      productName:product.name||"Product",
-      amount,profitRate:rate,commission,
-      baseCommission,commissionMultiplier,
-      reviewText,status:"completed"
-    });
-
-    // Update balance with an atomic MongoDB increment.
-    // This avoids full User validation so older accounts that do not have
-    // every newer profile field can still complete orders and receive profit.
-    const updatedUser=await User.findOneAndUpdate(
-      {_id:user._id},
-      {$inc:{balance:commission,totalProfit:commission}},
-      {new:true,runValidators:false}
-    );
+    const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
+    task.completedIds.push(req.params.productId);task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
+    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(user.balance||0),shortfall:0,taskNumber,reviewText,status:"completed"});
+    const updatedUser=await User.findOneAndUpdate({_id:user._id},{$inc:{balance:commission,totalProfit:commission}},{new:true,runValidators:false});
     if(!updatedUser)throw new Error("Unable to update account balance");
-
     const completed=task.completedIds.length;
-    res.json({
-      success:true,completed,total:5,taskComplete:completed>=5,
-      commission,creditedBalance:Number(updatedUser.balance||0),
-      totalProfit:Number(updatedUser.totalProfit||0),
-      reviewText
-    });
-  }catch(e){
-    console.error("task complete",e);
-    res.status(500).json({success:false,message:"Unable to complete order"});
-  }
+    res.json({success:true,completed,total:5,taskComplete:completed>=5,commission,creditedBalance:Number(updatedUser.balance||0),totalProfit:Number(updatedUser.totalProfit||0),message:"Order completed successfully"});
+  }catch(e){console.error("complete task",e);res.status(500).json({success:false,message:e.message||"Unable to complete order"});}
 });
-
-app.post("/api/tasks/reset",auth,async(req,res)=>{
-  try{
-    await TaskProgress.deleteOne({userId:req.auth.id});
-    res.json({success:true,message:"Task reset successfully"});
-  }catch(e){
-    res.status(500).json({success:false,message:"Task reset failed"});
-  }
-});
-
-app.post("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
-  try{
-    const user=await User.findOne({_id:req.params.id,role:"user"});
-    if(!user)return res.status(404).json({success:false,message:"User not found"});
-    const enabled=Boolean(req.body?.enabled);
-    const taskNumber=Number(req.body?.taskNumber||0);
-    const requiredAmount=Number(req.body?.requiredAmount||0);
-    const commissionMultiplier=Number(req.body?.commissionMultiplier||1);
-    if(enabled && (!Number.isInteger(taskNumber)||taskNumber<1||taskNumber>5))
-      return res.status(400).json({success:false,message:"Task number must be between 1 and 5"});
-    if(enabled && (!Number.isFinite(requiredAmount)||requiredAmount<=0))
-      return res.status(400).json({success:false,message:"Required amount must be greater than 0"});
-    if(enabled && (!Number.isFinite(commissionMultiplier)||commissionMultiplier<1||commissionMultiplier>20))
-      return res.status(400).json({success:false,message:"Commission multiplier must be between 1 and 20x"});
-    user.insufficientBalanceEnabled=enabled;
-    user.insufficientBalanceTaskNumber=enabled?taskNumber:0;
-    user.insufficientBalanceRequiredAmount=enabled?Number(requiredAmount.toFixed(2)):0;
-    user.insufficientBalanceCommissionMultiplier=enabled?Number(commissionMultiplier):1;
-    await user.save();
-    res.json({success:true,message:enabled
-      ? `Insufficient-balance rule enabled for ${user.username} — Task ${taskNumber}`
-      : "Insufficient-balance rule disabled for this user",
-      user:{
-        id:user._id,username:user.username,
-        insufficientBalanceEnabled:user.insufficientBalanceEnabled,
-        insufficientBalanceTaskNumber:user.insufficientBalanceTaskNumber,
-        insufficientBalanceRequiredAmount:user.insufficientBalanceRequiredAmount,
-        insufficientBalanceCommissionMultiplier:user.insufficientBalanceCommissionMultiplier
-      }});
-  }catch(e){
-    console.error("admin user insufficient-balance",e);
-    res.status(500).json({success:false,message:"User insufficient-balance rule update failed"});
-  }
-});
-
-app.post("/api/admin/users/:id/task-reset",auth,admin,async(req,res)=>{
-  try{
-    const user=await User.findOne({_id:req.params.id,role:"user"});
-    if(!user)return res.status(404).json({success:false,message:"User not found"});
-    await TaskProgress.deleteOne({userId:user._id});
-    res.json({
-      success:true,
-      message:"Task reset successfully. Previous orders and profits were preserved.",
-      userId:user._id
-    });
-  }catch(e){
-    console.error("admin task reset",e);
-    res.status(500).json({success:false,message:"Task reset failed"});
-  }
-});
-
 app.post("/api/products/:id/optimize",auth,async(req,res)=>{
-  const p=await Product.findById(req.params.id);
-  const user=await User.findById(req.auth.id);
+  const p=await Product.findById(req.params.id),user=await User.findById(req.auth.id);
   if(!p||!p.active)return res.status(404).json({success:false,message:"Product not found"});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   if(Number(user.vipLevel||0)<Number(p.requiredVip||0))return res.status(403).json({success:false,message:"VIP level required",requiredVip:Number(p.requiredVip||0)});
-
-  const configuredPrice=Number(p.price||0);
-  const requestedAmount=Number(req.body?.amount);
-  const amount=Number.isFinite(requestedAmount)&&requestedAmount>0
-    ? requestedAmount
-    : configuredPrice;
-
-  if(amount<=0)
-    return res.status(400).json({success:false,message:"Product value is not configured"});
-
-  const taskProgress=await TaskProgress.findOne({userId:req.auth.id});
-  const taskNumber=Number(taskProgress?.completedIds?.length||0)+1;
-  const userRuleTriggered=Boolean(user.insufficientBalanceEnabled) &&
-    Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
-    Number(user.insufficientBalanceRequiredAmount||0)>0;
-  const specialTriggered=userRuleTriggered;
-  const requiredBalance=userRuleTriggered
-    ? Number(user.insufficientBalanceRequiredAmount)
-    : (p.balanceGuardEnabled ? amount : 0);
-
-  if(requiredBalance>0 && Number(user.balance||0)<requiredBalance){
-    const difference=requiredBalance-Number(user.balance||0);
-    return res.status(400).json({
-      success:false,
-      insufficientBalance:true,
-      specialTask:specialTriggered,
-      message:"Insufficient balance. Please contact Customer Service.",
-      requiredAmount:requiredBalance,
-      availableBalance:Number(user.balance||0),
-      difference,
-      taskNumber
-    });
+  const taskProgress=await TaskProgress.findOne({userId:req.auth.id}),taskNumber=Number(taskProgress?.completedIds?.length||0)+1;
+  if(!taskProgress?.currentProductId||String(taskProgress.currentProductId)!==String(p._id))return res.status(400).json({success:false,message:"This is not the current task product"});
+  const amount=Number(taskProgress.currentProductAmount||0);
+  if(amount<=0)return res.status(400).json({success:false,message:"Product value is not configured"});
+  const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
+  const specialTriggered=userRuleTriggered,requiredBalance=userRuleTriggered?amount:(p.balanceGuardEnabled?amount:0);
+  if(requiredBalance>0&&Number(user.balance||0)<requiredBalance){
+    const availableBalance=Number(user.balance||0),difference=Math.max(0,requiredBalance-availableBalance);
+    let pending=await Order.findOne({userId:user._id,productId:p._id,taskNumber,status:"pending"}).sort({createdAt:-1});
+    if(!pending)pending=await Order.create({userId:user._id,productId:p._id,productName:p.name||"Product",amount,profitRate:Number(p.profitRate||p.dailyRate||0),commission:0,baseCommission:amount*(Number(p.profitRate||p.dailyRate||0)/100),commissionMultiplier:1,availableBalance,shortfall:difference,taskNumber,status:"pending"});
+    return res.status(400).json({success:false,insufficientBalance:true,orderStatus:"pending",orderId:pending._id,specialTask:specialTriggered,message:"Insufficient balance. Please contact Customer Service.",orderAmount:amount,availableBalance,difference,shortfall:difference,taskNumber});
   }
-
-  const rate=Number(p.profitRate||p.dailyRate||0);
-  const baseEstimatedProfit=amount*(rate/100);
-  const commissionMultiplier=specialTriggered
-    ? Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1)))
-    : 1;
-  const estimatedProfit=baseEstimatedProfit*commissionMultiplier;
-  res.json({
-    success:true,
-    product:p,
-    amount,
-    balanceGuardEnabled:Boolean(p.balanceGuardEnabled),
-    profitRate:rate,
-    estimatedProfit
-  });
+  const rate=Number(p.profitRate||p.dailyRate||0),baseEstimatedProfit=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,estimatedProfit=baseEstimatedProfit*commissionMultiplier;
+  res.json({success:true,product:p,amount,balanceGuardEnabled:Boolean(p.balanceGuardEnabled),profitRate:rate,estimatedProfit});
 });
-
 app.post("/api/deposits",auth,async(req,res)=>{
   const amount=Number(req.body?.amount||0);
   if(amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
@@ -781,25 +617,20 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
   }
 });
 
-async function ensureDefaultProducts(){
-  const eligibleCount=await Product.countDocuments({active:true,requiredVip:{$lte:1}});
-  if(eligibleCount>=5)return;
-  const defaults=[
-    {name:"Premium Stainless Steel Screw Set",description:"Featured marketplace product review task.",price:20,profitRate:30,image:"https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
-    {name:"CAT6 Flat Patch Cord",description:"Featured networking product review task.",price:28,profitRate:31,image:"https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
-    {name:"Aluminum Fountain Pen",description:"Featured stationery product review task.",price:35,profitRate:32,image:"https://images.unsplash.com/photo-1585336261022-680e295ce5b4?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
-    {name:"Waterproof Self Adhesive Wallpaper",description:"Featured home product review task.",price:45,profitRate:33,image:"https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true},
-    {name:"Smart Home Accessory",description:"Featured electronics product review task.",price:60,profitRate:35,image:"https://images.unsplash.com/photo-1558008258-3256797b43f3?auto=format&fit=crop&w=900&q=80",requiredVip:1,active:true}
-  ];
-  const existingNames=new Set((await Product.find({name:{$in:defaults.map(p=>p.name)}}).select("name")).map(p=>p.name));
-  const needed=5-eligibleCount;
-  const add=defaults.filter(p=>!existingNames.has(p.name)).slice(0,needed);
+async function ensureProductCatalog(){
+  const activeCount=await Product.countDocuments({active:true});
+  if(activeCount>=60)return;
+  const catalogNames=["Premium Stainless Steel Screw Set","CAT6 Flat Patch Cord","Aluminum Fountain Pen","Waterproof Self Adhesive Wallpaper","Smart Home Accessory","Cordless Power Drill","Rechargeable LED Work Light","USB-C Fast Charging Cable","Wireless Mouse","Mechanical Keyboard","Laptop Stand","Phone Holder","Bluetooth Speaker","Smart LED Bulb","Portable Power Bank","Digital Kitchen Scale","Stainless Steel Water Bottle","Non Slip Floor Mat","Microfiber Cleaning Cloth","Storage Organizer Box","Desk Lamp","Notebook Set","Ballpoint Pen Set","A4 Document Folder","Adhesive Tape Set","Precision Screwdriver Kit","Measuring Tape","Mini Hand Tool Set","Safety Work Gloves","Protective Face Shield","Cable Management Clips","HDMI Cable","USB Hub","Ethernet Network Adapter","Wireless Door Sensor","Smart Plug","Motion Sensor Light","Desk Organizer","Travel Adapter","Phone Charging Stand","Tablet Stand","Computer Webcam","Mini Tripod","Reusable Shopping Bag","Kitchen Storage Container","Silicone Spatula Set","Non Stick Pan","Coffee Mug Set","Kitchen Knife Organizer","Bathroom Storage Rack","Laundry Storage Bag","Foldable Storage Basket","Home Decoration Frame","Curtain Tieback Set","Wall Hook Set","Furniture Handle Set","Door Stopper Set","Garden Hand Tool Set","Plant Watering Bottle","LED String Light","Outdoor Utility Rope","Compact Tool Box","Multi Purpose Cleaning Brush","Reusable Food Cover Set","Portable Sewing Kit","Travel Toiletry Organizer","Document Storage Case","Cable Tester","Mini Digital Thermometer","Rechargeable Flashlight","Magnetic Tool Holder"];
+  const existing=await Product.find({name:{$in:catalogNames}}).select("name"),have=new Set(existing.map(p=>p.name));
+  const images=["https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1585336261022-680e295ce5b4?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558008258-3256797b43f3?auto=format&fit=crop&w=900&q=80"];
+  const add=catalogNames.filter(n=>!have.has(n)).map((name,i)=>({name,description:"Marketplace product review task item.",category:"General",price:0,profitRate:8+(i%6),image:images[i%images.length],requiredVip:1,active:true}));
   if(add.length)await Product.insertMany(add);
 }
+
 async function start(){
   if(!MONGO_URL)throw new Error("MONGO_URL is not configured");
   await mongoose.connect(MONGO_URL);
-  await ensureDefaultProducts();
+  await ensureProductCatalog();
   console.log("MongoDB connected successfully");
   app.listen(PORT,()=>console.log(`Zonguru backend running on port ${PORT}`));
 }
