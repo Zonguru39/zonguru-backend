@@ -43,6 +43,7 @@ function publicUser(user){
     referralCode:user.referralCode, referredBy:user.referredBy||null,
     frozenAmount:Number(user.frozenAmount||0),
     creditPoints:Number(user.creditPoints||0),
+    referralBonus:Number(user.referralBonus||0),
     creditScore:Number(user.creditScore??100),
     vipLevel:Number(user.vipLevel||0),
     avatarUrl:user.avatarUrl||""
@@ -63,6 +64,7 @@ const UserSchema=new mongoose.Schema({
   referredBy:{type:String,default:null},
   frozenAmount:{type:Number,default:0},
   creditPoints:{type:Number,default:0},
+  referralBonus:{type:Number,default:0},
   creditScore:{type:Number,default:100},
   vipLevel:{type:Number,default:0,min:0,max:3},
   insufficientBalanceEnabled:{type:Boolean,default:false},
@@ -167,10 +169,25 @@ app.post("/api/auth/register",async(req,res)=>{
     if(password.length<6)return res.status(400).json({success:false,message:"Password must be at least 6 characters"});
     if(!inviteCode)return res.status(400).json({success:false,message:"Invite code is required to register"});
 
-    const invite=await InviteCode.findOne({code:inviteCode,active:true});
-    if(!invite)return res.status(400).json({success:false,message:"Invalid or inactive invite code"});
     if(await User.findOne({username}))return res.status(409).json({success:false,message:"Username is already registered"});
     if(await User.findOne({email}))return res.status(409).json({success:false,message:"This email is already registered"});
+
+    const adminInvite=await InviteCode.findOne({code:inviteCode,active:true});
+    let referrer=null;
+    let ownerAdminId=null;
+    let ownerAdminUsername="";
+    let usedAdminInvite=null;
+
+    if(adminInvite){
+      ownerAdminId=adminInvite.ownerAdminId||null;
+      ownerAdminUsername=adminInvite.ownerAdminUsername||"";
+      usedAdminInvite=adminInvite;
+    }else{
+      referrer=await User.findOne({referralCode:inviteCode,role:"user"});
+      if(!referrer)return res.status(400).json({success:false,message:"Invalid or inactive invite code"});
+      ownerAdminId=referrer.ownerAdminId||null;
+      ownerAdminUsername=referrer.ownerAdminUsername||"";
+    }
 
     let referralCode;
     do{referralCode="ZG"+crypto.randomBytes(4).toString("hex").toUpperCase();}
@@ -178,12 +195,39 @@ app.post("/api/auth/register",async(req,res)=>{
 
     const user=await User.create({
       username,email,phone,emailVerified:true,passwordHash:hashPassword(password),
-      referralCode,ownerAdminId:invite.ownerAdminId||null,ownerAdminUsername:invite.ownerAdminUsername||"",inviteCodeUsed:invite.code
+      referralCode,
+      referredBy:referrer?.referralCode||null,
+      ownerAdminId,ownerAdminUsername,
+      inviteCodeUsed:inviteCode,
+      creditPoints:referrer?20:0,
+      referralBonus:referrer?20:0
     });
 
-    invite.usedBy=user._id;invite.usedAt=new Date();invite.active=false;await invite.save();
+    if(usedAdminInvite){
+      usedAdminInvite.usedBy=user._id;
+      usedAdminInvite.usedAt=new Date();
+      usedAdminInvite.active=false;
+      await usedAdminInvite.save();
+    }
 
-    await Message.create({userId:user._id,subject:"Welcome to Zonguru",text:"Your Zonguru account has been created successfully."});
+    if(referrer){
+      referrer.creditPoints=Number(referrer.creditPoints||0)+20;
+      referrer.referralBonus=Number(referrer.referralBonus||0)+20;
+      await referrer.save();
+      await Message.create({
+        userId:referrer._id,
+        subject:"Referral Bonus",
+        text:"A friend registered with your invite code. 20 bonus points have been added to your account."
+      });
+    }
+
+    await Message.create({
+      userId:user._id,
+      subject:"Welcome to Zonguru",
+      text:referrer
+        ?"Welcome to Zonguru. Your invite was accepted and 20 bonus points have been added to your account."
+        :"Your Zonguru account has been created successfully."
+    });
     res.json({success:true,message:"Registration successful",token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("register",e);
@@ -694,8 +738,47 @@ app.get("/api/chat/notice",auth,async(req,res)=>{
 });
 app.get("/api/team",auth,async(req,res)=>{
   const user=await User.findById(req.auth.id);
-  const members=await User.find({referredBy:user?.referralCode}).select("username email createdAt");
-  res.json({success:true,referralCode:user?.referralCode,members});
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  const members=await User.find({referredBy:user.referralCode}).select("username email createdAt creditPoints");
+  res.json({
+    success:true,
+    referralCode:user.referralCode||"",
+    referralLink:"",
+    referralBonus:Number(user.referralBonus||0),
+    referralCount:members.length,
+    bonusPerReferral:20,
+    members
+  });
+});
+
+app.get("/api/auth/validate-invite/:code",async(req,res)=>{
+  try{
+    const code=String(req.params.code||"").trim().toUpperCase();
+    if(!code)return res.json({success:true,valid:false,message:"Invite code is required"});
+    const adminInvite=await InviteCode.findOne({code,active:true}).select("code ownerAdminUsername");
+    if(adminInvite){
+      return res.json({
+        success:true,valid:true,type:"admin",
+        code:adminInvite.code,
+        ownerAdminUsername:adminInvite.ownerAdminUsername||"",
+        bonus:0,
+        message:"Valid platform invite code."
+      });
+    }
+    const referrer=await User.findOne({referralCode:code,role:"user"}).select("username referralCode");
+    if(referrer){
+      return res.json({
+        success:true,valid:true,type:"user",
+        code:referrer.referralCode,
+        username:referrer.username,
+        bonus:20,
+        message:"Valid invite code. 20 bonus points will be added after registration."
+      });
+    }
+    return res.json({success:true,valid:false,message:"Invalid or inactive invite code"});
+  }catch(e){
+    res.status(500).json({success:false,message:"Unable to validate invite code"});
+  }
 });
 
 /* Admin */
