@@ -477,21 +477,20 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
         });
       }
 
-      const balanceForTier=balance;
-      let tierMin=1,tierMax=5;
-      if(balanceForTier<500){tierMin=1;tierMax=2;}
-      else if(balanceForTier<2000){tierMin=1;tierMax=3;}
-      else if(balanceForTier<10000){tierMin=2;tierMax=4;}
-      else {tierMin=3;tierMax=5;}
+      // Product selection is intentionally independent from balance tier:
+      // choose randomly from the full eligible catalog (70+ products when seeded).
+      // Never fall back to an excluded product, so a previously shown product
+      // cannot reappear while it is still in the user's recent history.
+      const poolCandidates=candidates.filter(p=>!excluded.has(String(p._id)));
+      if(!poolCandidates.length){
+        return res.status(409).json({
+          success:false,
+          code:"PRODUCT_POOL_EXHAUSTED",
+          message:"No new product is available in the current product pool. Please try again later."
+        });
+      }
 
-      let tierCandidates=candidates.filter(p=>{
-        const tier=Math.max(1,Math.min(5,Number(p.valueTier||3)));
-        return tier>=tierMin && tier<=tierMax && !excluded.has(String(p._id));
-      });
-      if(!tierCandidates.length)tierCandidates=candidates.filter(p=>!excluded.has(String(p._id)));
-      if(!tierCandidates.length)tierCandidates=candidates;
-
-      const picked=tierCandidates[Math.floor(Math.random()*tierCandidates.length)];
+      const picked=poolCandidates[Math.floor(Math.random()*poolCandidates.length)];
       current=await Product.findById(picked._id);
       if(!current){
         return res.status(503).json({
