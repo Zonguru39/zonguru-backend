@@ -239,7 +239,7 @@ app.post("/api/auth/register",async(req,res)=>{
         {_id:adminInvite._id},
         {
           $inc:{useCount:1},
-          $set:{usedBy:adminInvite.usedBy||user._id,lastUsedAt:new Date()}
+          $set:{active:true,usedBy:adminInvite.usedBy||user._id,lastUsedAt:new Date()}
         }
       );
     }
