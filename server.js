@@ -112,6 +112,8 @@ const OrderSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,
   productId:mongoose.Schema.Types.ObjectId,
   productName:String,amount:Number,profitRate:Number,commission:Number,
+  baseCommission:{type:Number,default:0},
+  commissionMultiplier:{type:Number,default:1},
   reviewText:{type:String,default:""},
   status:{type:String,default:"completed"},
   createdAt:{type:Date,default:Date.now}
@@ -300,16 +302,24 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
       task:{
         total:5,
         completed:products.filter(p=>completed.has(String(p._id))).length,
-        products:products.map(p=>({
+        products:products.map(p=>{
+          const nextTaskNumber=products.filter(x=>completed.has(String(x._id))).length+1;
+          const baseProfit=Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100;
+          const specialForThisTask=Boolean(p.specialTask) &&
+            Number(p.specialTaskNumber||0)===nextTaskNumber &&
+            Number(p.specialRequiredAmount||0)>0;
+          const multiplier=specialForThisTask ? Number(p.specialCommissionMultiplier||1) : 1;
+          return {
           id:p._id,name:p.name,description:p.description,category:p.category,
-          price:Number(p.price||0),profitAmount:Number(p.price||0)*Number(p.profitRate||p.dailyRate||0)/100,
+          price:Number(p.price||0),profitAmount:baseProfit*multiplier,
           image:p.image||"",requiredVip:Number(p.requiredVip||0),balanceGuardEnabled:Boolean(p.balanceGuardEnabled),
           specialTask:Boolean(p.specialTask),specialTaskNumber:Number(p.specialTaskNumber||0),
           specialRequiredAmount:Number(p.specialRequiredAmount||0),
           specialCommissionMultiplier:Number(p.specialCommissionMultiplier||1),
           completed:completed.has(String(p._id)),
           reviewSuggestions:getReviewSuggestions(p)
-        }))
+          };
+        })
       }
     });
   }catch(e){
@@ -382,7 +392,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
         success:false,
         insufficientBalance:true,
         specialTask: specialTriggered,
-        message:"Insufficient balance. Please add funds before continuing this order or contact Customer Service.",
+        message:"လက်ကျန်ငွေမလုံလောက်ပါ။ Customer Service ကို ဆက်သွယ်ပါ။",
         requiredAmount:requiredBalance,
         availableBalance:Number(user.balance||0),
         difference,
@@ -392,7 +402,11 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
 
     const reviewText=String(req.body?.reviewText||"").trim();
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
-    const commission=amount*(rate/100);
+    const baseCommission=amount*(rate/100);
+    const commissionMultiplier=specialTriggered
+      ? Math.max(1,Math.min(20,Number(product.specialCommissionMultiplier||1)))
+      : 1;
+    const commission=baseCommission*commissionMultiplier;
 
     task.completedIds.push(req.params.productId);
     task.updatedAt=new Date();
@@ -403,6 +417,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
       productId:req.params.productId,
       productName:product.name||"Product",
       amount,profitRate:rate,commission,
+      baseCommission,commissionMultiplier,
       reviewText,status:"completed"
     });
 
@@ -494,7 +509,11 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   }
 
   const rate=Number(p.profitRate||p.dailyRate||0);
-  const estimatedProfit=amount*(rate/100);
+  const baseEstimatedProfit=amount*(rate/100);
+  const commissionMultiplier=specialTriggered
+    ? Math.max(1,Math.min(20,Number(p.specialCommissionMultiplier||1)))
+    : 1;
+  const estimatedProfit=baseEstimatedProfit*commissionMultiplier;
   res.json({
     success:true,
     product:p,
