@@ -275,15 +275,32 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
 });
 
 app.post("/api/auth/change-password",auth,async(req,res)=>{
-  const user=await User.findById(req.auth.id);
-  if(!user)return res.status(404).json({success:false,message:"User not found"});
-  if(!verifyPassword(String(req.body?.currentPassword||""),user.passwordHash))
-    return res.status(400).json({success:false,message:"Current password is incorrect"});
-  const p=String(req.body?.newPassword||"");
-  if(p.length<6)return res.status(400).json({success:false,message:"New password must be at least 6 characters"});
-  user.passwordHash=hashPassword(p);
-  await user.save();
-  res.json({success:true,message:"Password changed"});
+  try{
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const currentPassword=String(req.body?.currentPassword||"");
+    const newPassword=String(req.body?.newPassword||"");
+    if(!verifyPassword(currentPassword,user.passwordHash))
+      return res.status(400).json({success:false,message:"Current password is incorrect"});
+    if(newPassword.length<6)
+      return res.status(400).json({success:false,message:"New password must be at least 6 characters"});
+    if(newPassword===currentPassword)
+      return res.status(400).json({success:false,message:"New password must be different from the current password"});
+
+    const newHash=hashPassword(newPassword);
+    user.passwordHash=newHash;
+    await user.save();
+
+    // Verify the persisted database value before confirming success.
+    const saved=await User.findById(user._id).select("passwordHash");
+    if(!saved || !verifyPassword(newPassword,saved.passwordHash))
+      return res.status(500).json({success:false,message:"Password was not persisted. Please try again"});
+
+    res.json({success:true,passwordChanged:true,message:"Password changed and saved"});
+  }catch(e){
+    console.error("change-password",e);
+    res.status(500).json({success:false,message:"Password change failed. No partial change was confirmed"});
+  }
 });
 
 app.get("/api/products",auth,async(req,res)=>{
