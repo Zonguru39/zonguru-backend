@@ -151,6 +151,26 @@ const Order=mongoose.model("Order",OrderSchema);
 
 
 
+app.disable("x-powered-by");
+
+app.get("/health",async(req,res)=>{
+  try{
+    if(mongoose.connection.readyState!==1)
+      return res.status(503).json({success:false,service:"Zonguru Backend",status:"unhealthy",database:"disconnected"});
+    await mongoose.connection.db.admin().ping();
+    res.status(200).json({
+      success:true,
+      service:"Zonguru Backend",
+      status:"online",
+      database:"connected",
+      timestamp:new Date().toISOString()
+    });
+  }catch(e){
+    console.error("health check",e.message);
+    res.status(503).json({success:false,service:"Zonguru Backend",status:"unhealthy",database:"error"});
+  }
+});
+
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
 /* Registration: NO email verification and NO Resend */
