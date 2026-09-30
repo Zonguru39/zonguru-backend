@@ -150,6 +150,12 @@ const OrderSchema=new mongoose.Schema({
   createdAt:{type:Date,default:Date.now}
 });
 const Order=mongoose.model("Order",OrderSchema);
+const PlatformSettingSchema=new mongoose.Schema({
+  key:{type:String,unique:true,index:true},
+  value:{type:mongoose.Schema.Types.Mixed,default:null},
+  updatedAt:{type:Date,default:Date.now}
+},{collection:"platform_settings"});
+const PlatformSetting=mongoose.model("PlatformSetting",PlatformSettingSchema);
 
 
 
@@ -174,6 +180,44 @@ app.get("/health",async(req,res)=>{
 });
 
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
+
+app.get("/api/public/deposit-addresses",async(req,res)=>{
+  try{
+    const setting=await PlatformSetting.findOne({key:"deposit_addresses"}).lean();
+    const defaults={
+      "USDT-TRC20":"TS3fFhpyCECAtEnV7gurRyojgKVznieun5",
+      "USDT-ERC20":"0x84a872810ab213eacb8ac8e9e962faf34cd9a72b",
+      "ETH-ERC20":"0x84a872810ab213eacb8ac8e9e962faf34cd9a72b",
+      "BTC-BTC":"176xzWWVLW5KsHoikVPatuinJJ6vMrvifW"
+    };
+    res.json({success:true,addresses:{...defaults,...(setting?.value||{})}});
+  }catch(e){res.status(500).json({success:false,message:"Failed to load deposit addresses"});}
+});
+
+app.put("/api/internal/deposit-addresses",async(req,res)=>{
+  try{
+    const key=String(req.headers["x-deposit-settings-key"]||"");
+    if(!process.env.DEPOSIT_SETTINGS_KEY || key!==process.env.DEPOSIT_SETTINGS_KEY)
+      return res.status(401).json({success:false,message:"Unauthorized"});
+    const body=req.body||{};
+    const addresses={
+      "USDT-TRC20":String(body["USDT-TRC20"]||"").trim(),
+      "USDT-ERC20":String(body["USDT-ERC20"]||"").trim(),
+      "ETH-ERC20":String(body["ETH-ERC20"]||"").trim(),
+      "BTC-BTC":String(body["BTC-BTC"]||"").trim()
+    };
+    if(Object.values(addresses).some(v=>!v)) return res.status(400).json({success:false,message:"All deposit addresses are required."});
+    const setting=await PlatformSetting.findOneAndUpdate(
+      {key:"deposit_addresses"},
+      {$set:{value:addresses,updatedAt:new Date()}},
+      {upsert:true,new:true,setDefaultsOnInsert:true}
+    );
+    res.json({success:true,addresses:setting.value});
+  }catch(e){
+    console.error("Deposit address update:",e.message);
+    res.status(500).json({success:false,message:"Failed to save deposit addresses"});
+  }
+});
 
 /* Registration: NO email verification and NO Resend */
 app.post("/api/auth/register",async(req,res)=>{
