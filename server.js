@@ -981,7 +981,7 @@ async function ensureProductCatalog(){
   const catalogProducts=await Product.find({name:{$in:catalogNames}});
   for(const p of catalogProducts){
     const expected="https://picsum.photos/seed/"+encodeURIComponent(p.name)+"/900/600";
-    if(!p.image || p.image===old){
+    if(!p.image || !String(p.image).includes("picsum.photos")){
       p.image=expected;
       await p.save();
     }
