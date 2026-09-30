@@ -969,13 +969,23 @@ app.post("/api/admin/chat/:userId/reply",auth,admin,async(req,res)=>{
 async function ensureProductCatalog(){
   const catalogNames=["Premium Stainless Steel Screw Set","CAT6 Flat Patch Cord","Aluminum Fountain Pen","Waterproof Self Adhesive Wallpaper","Smart Home Accessory","Cordless Power Drill","Rechargeable LED Work Light","USB-C Fast Charging Cable","Wireless Mouse","Mechanical Keyboard","Laptop Stand","Phone Holder","Bluetooth Speaker","Smart LED Bulb","Portable Power Bank","Digital Kitchen Scale","Stainless Steel Water Bottle","Non Slip Floor Mat","Microfiber Cleaning Cloth","Storage Organizer Box","Desk Lamp","Notebook Set","Ballpoint Pen Set","A4 Document Folder","Adhesive Tape Set","Precision Screwdriver Kit","Measuring Tape","Mini Hand Tool Set","Safety Work Gloves","Protective Face Shield","Cable Management Clips","HDMI Cable","USB Hub","Ethernet Network Adapter","Wireless Door Sensor","Smart Plug","Motion Sensor Light","Desk Organizer","Travel Adapter","Phone Charging Stand","Tablet Stand","Computer Webcam","Mini Tripod","Reusable Shopping Bag","Kitchen Storage Container","Silicone Spatula Set","Non Stick Pan","Coffee Mug Set","Kitchen Knife Organizer","Bathroom Storage Rack","Laundry Storage Bag","Foldable Storage Basket","Home Decoration Frame","Curtain Tieback Set","Wall Hook Set","Furniture Handle Set","Door Stopper Set","Garden Hand Tool Set","Plant Watering Bottle","LED String Light","Outdoor Utility Rope","Compact Tool Box","Multi Purpose Cleaning Brush","Reusable Food Cover Set","Portable Sewing Kit","Travel Toiletry Organizer","Document Storage Case","Cable Tester","Mini Digital Thermometer","Rechargeable Flashlight","Magnetic Tool Holder"];
   const existing=await Product.find({name:{$in:catalogNames}}).select("name"),have=new Set(existing.map(p=>p.name));
-  const images=["https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1585336261022-680e295ce5b4?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=900&q=80","https://images.unsplash.com/photo-1558008258-3256797b43f3?auto=format&fit=crop&w=900&q=80"];
+  const images=catalogNames.map(name=>"https://picsum.photos/seed/"+encodeURIComponent(name)+"/900/600");
   const add=catalogNames.filter(n=>!have.has(n)).map((name,i)=>({
     name,description:"Marketplace product review task item.",category:"General",price:0,
     profitRate:8+(i%6),image:images[i%images.length],requiredVip:1,active:true,
     valueTier:1+(i%5)
   }));
   if(add.length)await Product.insertMany(add);
+  // Give every seeded catalog product its own stable image so the full catalog
+  // does not reuse the same five pictures.
+  const catalogProducts=await Product.find({name:{$in:catalogNames}});
+  for(const p of catalogProducts){
+    const expected="https://picsum.photos/seed/"+encodeURIComponent(p.name)+"/900/600";
+    if(!p.image || p.image===old){
+      p.image=expected;
+      await p.save();
+    }
+  }
   const missingTier=await Product.find({name:{$in:catalogNames},$or:[{valueTier:{$exists:false}},{valueTier:{$lt:1}},{valueTier:{$gt:5}}]});
   for(const p of missingTier){
     const idx=catalogNames.indexOf(p.name);
