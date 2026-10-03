@@ -951,15 +951,34 @@ app.get("/api/admin/users/:id/balances",auth,admin,async(req,res)=>{
   res.json({success:true,balances:walletMap(user)}); 
 });
 app.post("/api/admin/users/:id/balance",auth,admin,async(req,res)=>{
-  const amount=Number(req.body?.amount);
+  // Accept both "amount" and the admin UI's legacy "delta" field.
+  // This keeps older admin clients working while making currency-specific
+  // balance updates reliable.
+  const rawAmount=req.body?.amount ?? req.body?.delta;
+  const amount=Number(rawAmount);
   const currency=normCurrency(req.body?.currency);
   if(!Number.isFinite(amount)||amount===0)return res.status(400).json({success:false,message:"Enter a non-zero balance change"});
   const user=await User.findById(req.params.id);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
-  const w=walletMap(user),next=Number((Number(w[currency]||0)+amount).toFixed(2));
-  if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency,currentBalance:Number(w[currency]||0)});
-  setWalletBalance(user,currency,next);syncLegacyBalance(user);await user.save();
-  res.json({success:true,user:publicUser(user),currency,amount:Number(amount.toFixed(2)),newBalance:next});
+  const w=walletMap(user);
+  const current=Number(w[currency]||0);
+  const next=Number((current+amount).toFixed(2));
+  if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency,currentBalance:current});
+  setWalletBalance(user,currency,next);
+  // user.balance is always the balance for user.currency; other currencies
+  // remain in user.balances without being overwritten.
+  syncLegacyBalance(user);
+  await user.save();
+  const fresh=await User.findById(user._id);
+  res.json({
+    success:true,
+    user:publicUser(fresh),
+    currency,
+    amount:Number(amount.toFixed(2)),
+    previousBalance:current,
+    newBalance:Number(walletMap(fresh)[currency]||0),
+    balances:walletMap(fresh)
+  });
 });
 app.get("/api/admin/products",auth,admin,async(req,res)=>{
   res.json({success:true,products:await Product.find().sort({createdAt:1})});
