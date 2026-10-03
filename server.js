@@ -39,7 +39,7 @@ function publicUser(user){
   return {
     id:user._id, username:user.username, email:user.email, phone:user.phone,
     emailVerified:true, role:user.role, balance:user.balance,
-    currency:user.currency, totalProfit:user.totalProfit,
+    currency:user.currency, balances:user.balances||{}, totalProfit:user.totalProfit,
     referralCode:user.referralCode, referredBy:user.referredBy||null,
     frozenAmount:Number(user.frozenAmount||0),
     creditPoints:Number(user.creditPoints||0),
@@ -59,6 +59,7 @@ const UserSchema=new mongoose.Schema({
   role:{type:String,default:"user"},
   balance:{type:Number,default:0},
   currency:{type:String,default:"USDT"},
+  balances:{type:mongoose.Schema.Types.Mixed,default:{}},
   totalProfit:{type:Number,default:0},
   referralCode:{type:String,unique:true},
   referredBy:{type:String,default:null},
@@ -110,8 +111,11 @@ const ProductSchema=new mongoose.Schema({
 });
 const TransactionSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,type:String,amount:Number,
+  currency:{type:String,default:"USDT"},
   method:String,details:Object,status:{type:String,default:"pending"},
-  note:String,createdAt:{type:Date,default:Date.now},reviewedAt:Date
+  note:String,rejectionReason:{type:String,default:""},
+  reserved:{type:Boolean,default:false},
+  createdAt:{type:Date,default:Date.now},reviewedAt:Date
 });
 const MessageSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,subject:String,text:String,
@@ -335,6 +339,28 @@ app.post("/api/auth/login",async(req,res)=>{
   }
 });
 
+const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR"];
+function normCurrency(v){const x=String(v||"USDT").trim().toUpperCase();return SUPPORTED_CURRENCIES.includes(x)?x:"USDT";}
+function walletMap(user){
+  const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
+  const out={};
+  for(const k of Object.keys(raw||{})){const n=Number(raw[k]);if(Number.isFinite(n))out[normCurrency(k)]=Number(n.toFixed(2));}
+  const cur=normCurrency(user.currency);
+  if(!Number.isFinite(out[cur]))out[cur]=Number(user.balance||0);
+  else if(Number(user.balance||0)!==0 && Object.keys(out).length===1)out[cur]=Number(user.balance||0);
+  return out;
+}
+function setWalletBalance(user,currency,amount){
+  const cur=normCurrency(currency),w=walletMap(user);
+  const n=Number(amount);
+  if(!Number.isFinite(n)||n<0)throw new Error("Invalid balance amount");
+  w[cur]=Number(n.toFixed(2));user.balances=w;
+  if(normCurrency(user.currency)===cur)user.balance=w[cur];
+}
+function syncLegacyBalance(user){
+  const cur=normCurrency(user.currency),w=walletMap(user);
+  user.balances=w;user.balance=Number(w[cur]||0);
+}
 function auth(req,res,next){
   try{
     const h=req.headers.authorization||"";
@@ -711,30 +737,24 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   res.json({success:true,product:p,amount,balanceGuardEnabled:Boolean(p.balanceGuardEnabled),profitRate:rate,estimatedProfit});
 });
 app.post("/api/deposits",auth,async(req,res)=>{
-  const amount=Number(req.body?.amount||0);
-  if(amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
-  const t=await Transaction.create({
-    userId:req.auth.id,type:"deposit",amount,
-    method:String(req.body?.method||""),
-    details:req.body?.details||{},
-    note:String(req.body?.note||""),status:"pending"
-  });
+  const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
+  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
+  const t=await Transaction.create({userId:req.auth.id,type:"deposit",amount,currency,method:String(req.body?.method||""),details:req.body?.details||{},note:String(req.body?.note||""),status:"pending",reserved:false});
   res.json({success:true,transaction:t});
 });
 
 app.post("/api/withdrawals",auth,async(req,res)=>{
-  const amount=Number(req.body?.amount||0);
+  const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
   const user=await User.findById(req.auth.id);
-  if(amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
-  if(!user||user.balance<amount)
-    return res.status(400).json({success:false,message:"Insufficient balance"});
-  const t=await Transaction.create({
-    userId:req.auth.id,type:"withdrawal",amount,
-    method:String(req.body?.method||""),
-    details:req.body?.details||{},
-    note:String(req.body?.note||""),status:"pending"
-  });
-  res.json({success:true,transaction:t});
+  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  const w=walletMap(user),available=Number(w[currency]||0);
+  if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
+  w[currency]=Number((available-amount).toFixed(2));user.balances=w;
+  if(normCurrency(user.currency)===currency)user.balance=w[currency];
+  await user.save();
+  const t=await Transaction.create({userId:req.auth.id,type:"withdrawal",amount,currency,method:String(req.body?.method||""),details:req.body?.details||{},note:String(req.body?.note||""),status:"pending",reserved:true});
+  res.json({success:true,transaction:t,user:publicUser(user)});
 });
 
 app.get("/api/orders",auth,async(req,res)=>{
@@ -887,28 +907,46 @@ app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
   if(t.status!=="pending")return res.status(400).json({success:false,message:"Transaction already reviewed"});
   const user=await User.findById(t.userId);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
-  if(t.type==="deposit")user.balance+=t.amount;
-  if(t.type==="withdrawal"){
-    if(user.balance<t.amount)return res.status(400).json({success:false,message:"Insufficient balance"});
-    user.balance-=t.amount;
+  const currency=normCurrency(t.currency||user.currency),w=walletMap(user);
+  if(t.type==="deposit")setWalletBalance(user,currency,Number(w[currency]||0)+Number(t.amount||0));
+  if(t.type==="withdrawal" && !t.reserved){
+    const available=Number(w[currency]||0);
+    if(available<Number(t.amount||0))return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
+    setWalletBalance(user,currency,available-Number(t.amount||0));
   }
-  await user.save();
-  t.status="approved";t.reviewedAt=new Date();await t.save();
+  syncLegacyBalance(user);await user.save();
+  t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
 app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
-  const t=await Transaction.findByIdAndUpdate(
-    req.params.id,{status:"rejected",reviewedAt:new Date()},{new:true}
-  );
+  const reason=String(req.body?.reason||"").trim();
+  if(reason.length>1000)return res.status(400).json({success:false,message:"Rejection reason is too long"});
+  const t=await Transaction.findById(req.params.id);
   if(!t)return res.status(404).json({success:false,message:"Transaction not found"});
-  res.json({success:true,transaction:t});
+  if(t.status!=="pending")return res.status(400).json({success:false,message:"Transaction already reviewed"});
+  const user=await User.findById(t.userId);
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  const currency=normCurrency(t.currency||user.currency);
+  if(t.type==="withdrawal"&&t.reserved){
+    const w=walletMap(user);setWalletBalance(user,currency,Number(w[currency]||0)+Number(t.amount||0));syncLegacyBalance(user);await user.save();
+  }
+  t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
+  res.json({success:true,transaction:t,user:publicUser(user)});
+});
+app.get("/api/admin/users/:id/balances",auth,admin,async(req,res)=>{
+  const user=await User.findById(req.params.id);if(!user)return res.status(404).json({success:false,message:"User not found"});
+  res.json({success:true,balances:walletMap(user)}); 
 });
 app.post("/api/admin/users/:id/balance",auth,admin,async(req,res)=>{
-  const amount=Number(req.body?.amount||0);
+  const amount=Number(req.body?.amount);
+  const currency=normCurrency(req.body?.currency);
+  if(!Number.isFinite(amount)||amount===0)return res.status(400).json({success:false,message:"Enter a non-zero balance change"});
   const user=await User.findById(req.params.id);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
-  user.balance+=amount;await user.save();
-  res.json({success:true,user:publicUser(user)});
+  const w=walletMap(user),next=Number((Number(w[currency]||0)+amount).toFixed(2));
+  if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency,currentBalance:Number(w[currency]||0)});
+  setWalletBalance(user,currency,next);syncLegacyBalance(user);await user.save();
+  res.json({success:true,user:publicUser(user),currency,amount:Number(amount.toFixed(2)),newBalance:next});
 });
 app.get("/api/admin/products",auth,admin,async(req,res)=>{
   res.json({success:true,products:await Product.find().sort({createdAt:1})});
