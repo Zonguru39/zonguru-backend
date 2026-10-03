@@ -339,7 +339,7 @@ app.post("/api/auth/login",async(req,res)=>{
   }
 });
 
-const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR"];
+const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP"];
 function normCurrency(v){const x=String(v||"USDT").trim().toUpperCase();return SUPPORTED_CURRENCIES.includes(x)?x:"USDT";}
 function walletMap(user){
   const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
@@ -417,6 +417,10 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
     user.phone=phone;
     user.avatarUrl=avatarUrl;
     user.currency=currency;
+    // Keep the legacy balance field synchronized with the selected wallet.
+    // This makes the selected currency balance the real withdrawal balance,
+    // instead of leaving user.balance pointing at the previous currency.
+    syncLegacyBalance(user);
     await user.save();
 
     res.json({success:true,message:"Profile updated successfully",user:publicUser(user)});
