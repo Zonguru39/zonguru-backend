@@ -726,10 +726,30 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
     task.completedIds.push(req.params.productId);task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
     await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(user.balance||0),shortfall:0,taskNumber,reviewText,status:"completed"});
-    const updatedUser=await User.findOneAndUpdate({_id:user._id},{$inc:{balance:commission,totalProfit:commission}},{new:true,runValidators:false});
+    // Credit profit to the user's active/native currency wallet.
+    // Do not update only the legacy user.balance field: multi-currency
+    // accounts keep their real balances in user.balances[currency].
+    const accountCurrency=normCurrency(user.currency||"USDT");
+    const wallet=walletMap(user);
+    const beforeBalance=Number(wallet[accountCurrency]||0);
+    const creditedBalance=Number((beforeBalance+commission).toFixed(2));
+    setWalletBalance(user,accountCurrency,creditedBalance);
+    user.totalProfit=Number((Number(user.totalProfit||0)+commission).toFixed(2));
+    syncLegacyBalance(user);
+    await user.save();
+    const updatedUser=await User.findById(user._id);
     if(!updatedUser)throw new Error("Unable to update account balance");
+    const finalWallet=walletMap(updatedUser);
     const completed=task.completedIds.length;
-    res.json({success:true,completed,total:5,taskComplete:completed>=5,commission,creditedBalance:Number(updatedUser.balance||0),totalProfit:Number(updatedUser.totalProfit||0),message:"Order completed successfully"});
+    res.json({
+      success:true,completed,total:5,taskComplete:completed>=5,
+      commission,
+      creditedBalance:Number(finalWallet[accountCurrency]||0),
+      currency:accountCurrency,
+      balances:finalWallet,
+      totalProfit:Number(updatedUser.totalProfit||0),
+      message:"Order completed successfully"
+    });
   }catch(e){console.error("complete task",e);res.status(500).json({success:false,message:e.message||"Unable to complete order"});}
 });
 app.post("/api/products/:id/optimize",auth,async(req,res)=>{
