@@ -340,7 +340,19 @@ app.post("/api/auth/login",async(req,res)=>{
 });
 
 const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP"];
+// Rates are expressed as units of the currency per 1 USDT.
+// Wallet balances remain stored in their native currency.
+const CURRENCY_RATES={MXN:18.5,USD:1,EUR:0.86,GBP:0.75,CAD:1.38,AUD:1.51,JPY:148,CNY:7.1,SGD:1.28,THB:32.5,MYR:4.25,BRL:5.35,INR:88,EGP:51.75};
 function normCurrency(v){const x=String(v||"USDT").trim().toUpperCase();return SUPPORTED_CURRENCIES.includes(x)?x:"USDT";}
+function convertCurrencyAmount(amount,fromCurrency,toCurrency){
+  const n=Number(amount);
+  const from=normCurrency(fromCurrency),to=normCurrency(toCurrency);
+  if(!Number.isFinite(n))return 0;
+  if(from===to)return n;
+  const fromRate=from==="USDT"?1:Number(CURRENCY_RATES[from]||1);
+  const toRate=to==="USDT"?1:Number(CURRENCY_RATES[to]||1);
+  return (n/fromRate)*toRate;
+}
 function walletMap(user){
   const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
   const out={};
@@ -753,21 +765,52 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   const w=walletMap(user);
-  // Legacy accounts may have the selected-currency amount in user.balance
-  // while balances[code] is still missing/stale. Treat that amount as the
-  // selected wallet balance so valid withdrawals are not rejected.
+  const accountCurrency=normCurrency(user.currency||"USDT");
+  let sourceCurrency=currency;
   let available=Number(w[currency]||0);
-  if(normCurrency(user.currency)===currency){
-    const legacy=Number(user.balance||0);
-    if(Number.isFinite(legacy) && legacy>available) available=legacy;
+  let debitAmount=amount;
+
+  // If the requested currency has its own wallet, use it directly.
+  // Otherwise allow withdrawal in another supported currency by converting
+  // the user's active wallet balance instead of incorrectly returning
+  // "Insufficient balance".
+  if(!Number.isFinite(available)||available<amount){
+    const activeBalance=Number(w[accountCurrency] ?? user.balance ?? 0);
+    const convertedAvailable=convertCurrencyAmount(activeBalance,accountCurrency,currency);
+    if(convertedAvailable>=amount && currency!==accountCurrency && !Number.isFinite(w[currency])){
+      sourceCurrency=accountCurrency;
+      available=convertedAvailable;
+      debitAmount=convertCurrencyAmount(amount,currency,accountCurrency);
+    }else if(currency===accountCurrency && Number.isFinite(user.balance) && Number(user.balance)>available){
+      available=Number(user.balance);
+    }
   }
-  if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available,balances:w,accountCurrency:normCurrency(user.currency)});
-  w[currency]=Number((available-amount).toFixed(2));
+
+  if(available<amount)return res.status(400).json({
+    success:false,message:"Insufficient balance",currency,
+    availableBalance:Number(available.toFixed(2)),balances:w,accountCurrency
+  });
+
+  if(sourceCurrency===currency){
+    w[currency]=Number((available-amount).toFixed(2));
+  }else{
+    const sourceAvailable=Number(w[sourceCurrency] ?? user.balance ?? 0);
+    if(sourceAvailable<debitAmount)return res.status(400).json({
+      success:false,message:"Insufficient balance",currency,
+      availableBalance:Number(convertCurrencyAmount(sourceAvailable,sourceCurrency,currency).toFixed(2)),
+      balances:w,accountCurrency
+    });
+    w[sourceCurrency]=Number((sourceAvailable-debitAmount).toFixed(2));
+  }
   user.balances=w;
-  if(normCurrency(user.currency)===currency)user.balance=w[currency];
+  syncLegacyBalance(user);
   await user.save();
-  const t=await Transaction.create({userId:req.auth.id,type:"withdrawal",amount,currency,method:String(req.body?.method||""),details:req.body?.details||{},note:String(req.body?.note||""),status:"pending",reserved:true});
-  res.json({success:true,transaction:t,user:publicUser(user)});
+  const t=await Transaction.create({
+    userId:req.auth.id,type:"withdrawal",amount,currency,
+    method:String(req.body?.method||""),details:req.body?.details||{},
+    note:String(req.body?.note||""),status:"pending",reserved:true
+  });
+  res.json({success:true,transaction:t,user:publicUser(user),debitedCurrency:sourceCurrency,debitedAmount:Number(debitAmount.toFixed(2))});
 });
 
 app.get("/api/orders",auth,async(req,res)=>{
