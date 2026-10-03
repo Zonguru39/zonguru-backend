@@ -369,17 +369,23 @@ function normalizeWalletState(user){
   return w;
 }
 async function normalizeAllUserWallets(){
-  const users=await User.find({});
+  const users=await User.find({}).lean();
   let fixed=0;
-  for(const user of users){
-    const before=Number(user.balance||0);
-    const cur=normCurrency(user.currency);
-    const w=walletMap(user);
+  for(const raw of users){
+    const cur=normCurrency(raw.currency);
+    const w=walletMap(raw);
     const next=Number(w[cur]||0);
-    const beforeWallet=JSON.stringify(user.balances||{});
-    normalizeWalletState(user);
-    if(before!==next || beforeWallet!==JSON.stringify(user.balances||{})){
-      await user.save();
+    const before=Number(raw.balance||0);
+    const beforeWallet=JSON.stringify(raw.balances||{});
+    const normalized={...w};
+    const changed=before!==next || beforeWallet!==JSON.stringify(normalized);
+    if(changed){
+      // Use a direct $set so legacy/incomplete accounts are normalized without
+      // re-running required validators for unrelated fields such as email/phone.
+      await User.updateOne(
+        {_id:raw._id},
+        {$set:{balances:normalized,balance:next}}
+      );
       fixed++;
     }
   }
