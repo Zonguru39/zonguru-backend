@@ -368,6 +368,23 @@ function normalizeWalletState(user){
   user.balances=w;user.balance=Number(w[normCurrency(user.currency)]||0);
   return w;
 }
+async function normalizeAllUserWallets(){
+  const users=await User.find({});
+  let fixed=0;
+  for(const user of users){
+    const before=Number(user.balance||0);
+    const cur=normCurrency(user.currency);
+    const w=walletMap(user);
+    const next=Number(w[cur]||0);
+    const beforeWallet=JSON.stringify(user.balances||{});
+    normalizeWalletState(user);
+    if(before!==next || beforeWallet!==JSON.stringify(user.balances||{})){
+      await user.save();
+      fixed++;
+    }
+  }
+  console.log("Wallet synchronization complete:",fixed,"users normalized");
+}
 function setWalletBalance(user,currency,amount){
   const cur=normCurrency(currency),w=walletMap(user);
   const n=Number(amount);
@@ -1138,6 +1155,7 @@ async function ensureProductCatalog(){
 async function start(){
   if(!MONGO_URL)throw new Error("MONGO_URL is not configured");
   await mongoose.connect(MONGO_URL);
+  await normalizeAllUserWallets();
   await ensureProductCatalog();
   console.log("MongoDB connected successfully");
   app.listen(PORT,()=>console.log(`Zonguru backend running on port ${PORT}`));
