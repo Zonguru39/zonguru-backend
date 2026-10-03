@@ -36,10 +36,11 @@ function signUser(user){
   return jwt.sign({id:user._id.toString(),username:user.username,role:user.role},JWT_SECRET,{expiresIn:"30d"});
 }
 function publicUser(user){
+  const w=walletMap(user),cur=normCurrency(user.currency);
   return {
     id:user._id, username:user.username, email:user.email, phone:user.phone,
-    emailVerified:true, role:user.role, balance:user.balance,
-    currency:user.currency, balances:user.balances||{}, totalProfit:user.totalProfit,
+    emailVerified:true, role:user.role, balance:Number(w[cur]||0),
+    currency:cur, balances:w, totalProfit:user.totalProfit,
     referralCode:user.referralCode, referredBy:user.referredBy||null,
     frozenAmount:Number(user.frozenAmount||0),
     creditPoints:Number(user.creditPoints||0),
@@ -358,9 +359,14 @@ function walletMap(user){
   const out={};
   for(const k of Object.keys(raw||{})){const n=Number(raw[k]);if(Number.isFinite(n))out[normCurrency(k)]=Number(n.toFixed(2));}
   const cur=normCurrency(user.currency);
-  if(!Number.isFinite(out[cur]))out[cur]=Number(user.balance||0);
-  else if(Number(user.balance||0)!==0 && Object.keys(out).length===1)out[cur]=Number(user.balance||0);
+  // balances[currency] is the canonical wallet value; legacy user.balance is only a mirror.
+  if(!Object.prototype.hasOwnProperty.call(out,cur))out[cur]=Number(Number(user.balance||0).toFixed(2));
   return out;
+}
+function normalizeWalletState(user){
+  const w=walletMap(user);
+  user.balances=w;user.balance=Number(w[normCurrency(user.currency)]||0);
+  return w;
 }
 function setWalletBalance(user,currency,amount){
   const cur=normCurrency(currency),w=walletMap(user);
@@ -508,7 +514,9 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
       Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
       Number(user.insufficientBalanceRequiredAmount||0)>0;
     const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
-    const balance=Number(user.balance||0);
+    const accountCurrency=normCurrency(user.currency||"USDT");
+    const wallet=walletMap(user);
+    const balance=Number(wallet[accountCurrency]||0);
 
     let current=null;
     if(task.currentProductId){
