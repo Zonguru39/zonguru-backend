@@ -394,7 +394,7 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
     const phone=String(req.body?.phone??user.phone).trim();
     const avatarUrl=String((req.body?.avatarUrl ?? user.avatarUrl) || "").trim();
     const currency=String(req.body?.currency ?? user.currency ?? "USDT").trim().toUpperCase();
-    const allowedCurrencies=["USDT","MXN","USD","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR"];
+    const allowedCurrencies=["USDT","MXN","USD","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP"];
     if(!allowedCurrencies.includes(currency))
       return res.status(400).json({success:false,message:"Unsupported currency"});
 
@@ -752,9 +752,18 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   const user=await User.findById(req.auth.id);
   if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
-  const w=walletMap(user),available=Number(w[currency]||0);
-  if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
-  w[currency]=Number((available-amount).toFixed(2));user.balances=w;
+  const w=walletMap(user);
+  // Legacy accounts may have the selected-currency amount in user.balance
+  // while balances[code] is still missing/stale. Treat that amount as the
+  // selected wallet balance so valid withdrawals are not rejected.
+  let available=Number(w[currency]||0);
+  if(normCurrency(user.currency)===currency){
+    const legacy=Number(user.balance||0);
+    if(Number.isFinite(legacy) && legacy>available) available=legacy;
+  }
+  if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available,balances:w,accountCurrency:normCurrency(user.currency)});
+  w[currency]=Number((available-amount).toFixed(2));
+  user.balances=w;
   if(normCurrency(user.currency)===currency)user.balance=w[currency];
   await user.save();
   const t=await Transaction.create({userId:req.auth.id,type:"withdrawal",amount,currency,method:String(req.body?.method||""),details:req.body?.details||{},note:String(req.body?.note||""),status:"pending",reserved:true});
