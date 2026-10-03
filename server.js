@@ -777,7 +777,7 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   if(!Number.isFinite(available)||available<amount){
     const activeBalance=Number(w[accountCurrency] ?? user.balance ?? 0);
     const convertedAvailable=convertCurrencyAmount(activeBalance,accountCurrency,currency);
-    if(convertedAvailable>=amount && currency!==accountCurrency && !Number.isFinite(w[currency])){
+    if(convertedAvailable>=amount && currency!==accountCurrency && Number(w[currency]||0)<=0){
       sourceCurrency=accountCurrency;
       available=convertedAvailable;
       debitAmount=convertCurrencyAmount(amount,currency,accountCurrency);
