@@ -427,21 +427,34 @@ app.get("/api/me",auth,async(req,res)=>{
 
 app.patch("/api/me/currency",auth,async(req,res)=>{
   try{
-    const user=await User.findById(req.auth.id);if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
     const currency=normCurrency(req.body?.currency);
     const oldCurrency=normCurrency(user.currency||"USDT");
+    const w=walletMap(user);
+
     if(oldCurrency!==currency){
-      const w=walletMap(user);
+      // Keep the existing wallet data intact. If the requested currency has
+      // never been stored before, create its value using the existing
+      // platform rate table. Once a native wallet exists, reuse it.
       if(!Object.prototype.hasOwnProperty.call(w,currency)){
         const oldBalance=Number(w[oldCurrency]||0);
-        const converted=convertCurrencyAmount(oldBalance,oldCurrency,currency);
-        w[currency]=Number(converted.toFixed(2));
-        user.balances=w;
+        w[currency]=Number(convertCurrencyAmount(oldBalance,oldCurrency,currency).toFixed(2));
       }
-      user.currency=currency;syncLegacyBalance(user);await user.save();
+      user.balances=w;
+      user.currency=currency;
+      syncLegacyBalance(user);
+      await user.save();
+    }else{
+      syncLegacyBalance(user);
+      await user.save();
     }
-    res.json({success:true,user:publicUser(user)});
-  }catch(e){res.status(500).json({success:false,message:e.message||"Currency update failed"});}
+
+    res.json({success:true,user:publicUser(user),currency:user.currency,balances:user.balances,balance:user.balance});
+  }catch(e){
+    console.error("currency update",e);
+    res.status(500).json({success:false,message:e.message||"Currency update failed"});
+  }
 });
 
 app.patch("/api/me/profile",auth,async(req,res)=>{
