@@ -116,6 +116,7 @@ const TransactionSchema=new mongoose.Schema({
   method:String,details:Object,status:{type:String,default:"pending"},
   note:String,rejectionReason:{type:String,default:""},
   reserved:{type:Boolean,default:false},
+  debitedCurrency:{type:String,default:""},debitedAmount:{type:Number,default:0},
   createdAt:{type:Date,default:Date.now},reviewedAt:Date
 });
 const MessageSchema=new mongoose.Schema({
@@ -876,7 +877,7 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   const t=await Transaction.create({
     userId:req.auth.id,type:"withdrawal",amount,currency,
     method:String(req.body?.method||""),details:req.body?.details||{},
-    note:String(req.body?.note||""),status:"pending",reserved:true
+    note:String(req.body?.note||""),status:"pending",reserved:true,debitedCurrency:sourceCurrency,debitedAmount:Number(debitAmount.toFixed(2))
   });
   res.json({success:true,transaction:t,user:publicUser(user),debitedCurrency:sourceCurrency,debitedAmount:Number(debitAmount.toFixed(2))});
 });
