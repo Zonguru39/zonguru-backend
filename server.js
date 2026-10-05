@@ -425,6 +425,25 @@ app.get("/api/me",auth,async(req,res)=>{
   res.json({success:true,user:publicUser(user)});
 });
 
+app.patch("/api/me/currency",auth,async(req,res)=>{
+  try{
+    const user=await User.findById(req.auth.id);if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const currency=normCurrency(req.body?.currency);
+    const oldCurrency=normCurrency(user.currency||"USDT");
+    if(oldCurrency!==currency){
+      const w=walletMap(user);
+      if(!Object.prototype.hasOwnProperty.call(w,currency)){
+        const oldBalance=Number(w[oldCurrency]||0);
+        const converted=convertCurrencyAmount(oldBalance,oldCurrency,currency);
+        w[currency]=Number(converted.toFixed(2));
+        user.balances=w;
+      }
+      user.currency=currency;syncLegacyBalance(user);await user.save();
+    }
+    res.json({success:true,user:publicUser(user)});
+  }catch(e){res.status(500).json({success:false,message:e.message||"Currency update failed"});}
+});
+
 app.patch("/api/me/profile",auth,async(req,res)=>{
   try{
     const user=await User.findById(req.auth.id);
