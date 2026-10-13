@@ -420,10 +420,29 @@ function admin(req,res,next){
   next();
 }
 
+function yangonProfitWindows(now=new Date()){
+  const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Yangon",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(now);
+  const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+  const y=Number(p.year),m=Number(p.month),d=Number(p.day),offsetMs=390*60*1000;
+  const localMidnight=Date.UTC(y,m-1,d)-offsetMs;
+  const weekday=new Date(Date.UTC(y,m-1,d)).getUTCDay();
+  const daysSinceMonday=(weekday+6)%7;
+  return {dayStart:new Date(localMidnight),weekStart:new Date(localMidnight-daysSinceMonday*86400000),monthStart:new Date(Date.UTC(y,m-1,1)-offsetMs)};
+}
+async function userProfitPeriods(userId,now=new Date()){
+  const w=yangonProfitWindows(now);
+  const rows=await Order.find({userId,status:"completed",createdAt:{$gte:w.monthStart}}).select("commission createdAt").lean();
+  let today=0,week=0,month=0;
+  for(const row of rows){const t=new Date(row.createdAt||0).getTime(),profit=Number(row.commission||0);if(!Number.isFinite(profit))continue;month+=profit;if(t>=w.weekStart.getTime())week+=profit;if(t>=w.dayStart.getTime())today+=profit;}
+  return {todayProfit:Number(today.toFixed(2)),weeklyProfit:Number(week.toFixed(2)),monthlyProfit:Number(month.toFixed(2))};
+}
 app.get("/api/me",auth,async(req,res)=>{
-  const user=await User.findById(req.auth.id);
-  if(!user)return res.status(404).json({success:false,message:"User not found"});
-  res.json({success:true,user:publicUser(user)});
+  try{
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const profitPeriods=await userProfitPeriods(user._id);
+    res.json({success:true,user:{...publicUser(user),...profitPeriods}});
+  }catch(e){console.error("load user profit periods",e);res.status(500).json({success:false,message:"Unable to load account profit summary"});}
 });
 
 app.patch("/api/me/currency",auth,async(req,res)=>{
