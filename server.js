@@ -431,9 +431,10 @@ function yangonProfitWindows(now=new Date()){
 }
 async function userProfitPeriods(userId,now=new Date()){
   const w=yangonProfitWindows(now);
-  const rows=await Order.find({userId,status:"completed",createdAt:{$gte:w.monthStart}}).select("commission createdAt").lean();
+  const queryStart=w.weekStart.getTime()<w.monthStart.getTime()?w.weekStart:w.monthStart;
+  const rows=await Order.find({userId,status:"completed",createdAt:{$gte:queryStart}}).select("commission createdAt").lean();
   let today=0,week=0,month=0;
-  for(const row of rows){const t=new Date(row.createdAt||0).getTime(),profit=Number(row.commission||0);if(!Number.isFinite(profit))continue;month+=profit;if(t>=w.weekStart.getTime())week+=profit;if(t>=w.dayStart.getTime())today+=profit;}
+  for(const row of rows){const t=new Date(row.createdAt||0).getTime(),profit=Number(row.commission||0);if(!Number.isFinite(profit))continue;if(t>=w.monthStart.getTime())month+=profit;if(t>=w.weekStart.getTime())week+=profit;if(t>=w.dayStart.getTime())today+=profit;}
   return {todayProfit:Number(today.toFixed(2)),weeklyProfit:Number(week.toFixed(2)),monthlyProfit:Number(month.toFixed(2))};
 }
 app.get("/api/me",auth,async(req,res)=>{
