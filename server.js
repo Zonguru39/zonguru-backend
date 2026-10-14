@@ -360,9 +360,12 @@ function convertCurrencyAmount(amount,fromCurrency,toCurrency){
 function walletMap(user){
   const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
   const keys=Object.keys(raw).filter(k=>SUPPORTED_CURRENCIES.includes(String(k).toUpperCase())&&Number.isFinite(Number(raw[k])));
+  // USDT is the one canonical stored balance. If it exists, never add legacy
+  // display-currency values to it, or the same funds can be counted twice.
+  const usdtKey=keys.find(k=>String(k).toUpperCase()==="USDT");
   let primaryUSDT=0;
-  if(keys.length===1&&String(keys[0]).toUpperCase()==="USDT"){
-    primaryUSDT=Number(raw[keys[0]]||0);
+  if(usdtKey!==undefined){
+    primaryUSDT=Number(raw[usdtKey]||0);
   }else if(keys.length){
     primaryUSDT=keys.reduce((sum,k)=>sum+convertCurrencyAmount(Number(raw[k]||0),k,"USDT"),0);
   }else{
