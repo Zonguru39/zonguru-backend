@@ -842,14 +842,25 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
   res.json({success:true,product:p,amount,balanceGuardEnabled:Boolean(p.balanceGuardEnabled),profitRate:rate,estimatedProfit});
 });
 app.post("/api/deposits",auth,async(req,res)=>{
-  const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
-  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
-  const method=String(req.body?.method||"");
-  const proofImage=String(req.body?.proofImage||"");
-  if(!["bank","crypto"].includes(method))return res.status(400).json({success:false,message:"Choose a valid deposit method"});
-  if(!proofImage.startsWith("data:image/")||proofImage.length>750000)return res.status(400).json({success:false,message:"Please attach a valid payment screenshot under the size limit"});
-  const t=await Transaction.create({userId:req.auth.id,type:"deposit",amount,currency,method,details:req.body?.details||{},proofImage,note:String(req.body?.note||""),status:"pending",reserved:false});
-  res.json({success:true,transaction:t});
+  try{
+    const amount=Number(req.body?.amount);
+    const requestedCurrency=String(req.body?.currency||"USDT").trim().toUpperCase();
+    if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
+    // Reject unsupported currency codes instead of silently converting the request to USDT.
+    if(!SUPPORTED_CURRENCIES.includes(requestedCurrency))return res.status(400).json({success:false,message:"Unsupported deposit currency"});
+    const currency=requestedCurrency;
+    const method=String(req.body?.method||"");
+    const proofImage=String(req.body?.proofImage||"");
+    if(!["bank","crypto"].includes(method))return res.status(400).json({success:false,message:"Choose a valid deposit method"});
+    if(!proofImage.startsWith("data:image/")||proofImage.length>750000)return res.status(400).json({success:false,message:"Please attach a valid payment screenshot under the size limit"});
+    const user=await User.findById(req.auth.id);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const t=await Transaction.create({userId:user._id,type:"deposit",amount:Number(amount.toFixed(2)),currency,method,details:req.body?.details||{},proofImage,note:String(req.body?.note||""),status:"pending",reserved:false});
+    res.json({success:true,transaction:t});
+  }catch(e){
+    console.error("submit deposit",e);
+    res.status(500).json({success:false,message:"Unable to submit deposit"});
+  }
 });
 
 app.post("/api/withdrawals",auth,async(req,res)=>{
@@ -1051,21 +1062,31 @@ app.get("/api/admin/transactions",auth,admin,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find().sort({createdAt:-1})});
 });
 app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
-  const t=await Transaction.findById(req.params.id);
-  if(!t)return res.status(404).json({success:false,message:"Transaction not found"});
-  if(t.status!=="pending")return res.status(400).json({success:false,message:"Transaction already reviewed"});
-  const user=await User.findById(t.userId);
-  if(!user)return res.status(404).json({success:false,message:"User not found"});
-  const currency=normCurrency(t.currency||user.currency),w=walletMap(user);
-  if(t.type==="deposit")setWalletBalance(user,currency,Number(w[currency]||0)+Number(t.amount||0));
-  if(t.type==="withdrawal" && !t.reserved){
-    const available=Number(w[currency]||0);
-    if(available<Number(t.amount||0))return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
-    setWalletBalance(user,currency,available-Number(t.amount||0));
+  try{
+    const t=await Transaction.findById(req.params.id);
+    if(!t)return res.status(404).json({success:false,message:"Transaction not found"});
+    if(t.status!=="pending")return res.status(400).json({success:false,message:"Transaction already reviewed"});
+    const user=await User.findById(t.userId);
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const requestedCurrency=String(t.currency||user.currency||"USDT").trim().toUpperCase();
+    if(!SUPPORTED_CURRENCIES.includes(requestedCurrency))return res.status(400).json({success:false,message:"Unsupported transaction currency; balance was not changed"});
+    const currency=requestedCurrency,w=walletMap(user),amount=Number(t.amount);
+    if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid transaction amount; balance was not changed"});
+    // Deposit approvals credit the exact currency and amount recorded on the pending request.
+    // They do not convert the deposit into the user's currently selected display currency.
+    if(t.type==="deposit")setWalletBalance(user,currency,Number(w[currency]||0)+Number(amount.toFixed(2)));
+    if(t.type==="withdrawal" && !t.reserved){
+      const available=Number(w[currency]||0);
+      if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
+      setWalletBalance(user,currency,Number((available-amount).toFixed(2)));
+    }
+    syncLegacyBalance(user);await user.save();
+    t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
+    res.json({success:true,transaction:t,user:publicUser(user),creditedCurrency:t.type==="deposit"?currency:undefined,creditedAmount:t.type==="deposit"?Number(amount.toFixed(2)):undefined});
+  }catch(e){
+    console.error("approve transaction",e);
+    res.status(500).json({success:false,message:"Unable to approve transaction. Please refresh and check transaction status before retrying."});
   }
-  syncLegacyBalance(user);await user.save();
-  t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
-  res.json({success:true,transaction:t,user:publicUser(user)});
 });
 app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
   const reason=String(req.body?.reason||"").trim();
