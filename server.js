@@ -380,24 +380,18 @@ async function normalizeAllUserWallets(){
   const users=await User.find({}).lean();
   let fixed=0;
   for(const raw of users){
-    const cur=normCurrency(raw.currency);
     const w=walletMap(raw);
-    const next=Number(w[cur]||0);
+    const next=Number(w.USDT||0);
     const before=Number(raw.balance||0);
     const beforeWallet=JSON.stringify(raw.balances||{});
-    const normalized={...w};
+    const normalized={USDT:next};
     const changed=before!==next || beforeWallet!==JSON.stringify(normalized);
     if(changed){
-      // Use a direct $set so legacy/incomplete accounts are normalized without
-      // re-running required validators for unrelated fields such as email/phone.
-      await User.updateOne(
-        {_id:raw._id},
-        {$set:{balances:normalized,balance:next}}
-      );
+      await User.updateOne({_id:raw._id},{$set:{balances:normalized,balance:next}});
       fixed++;
     }
   }
-  console.log("Wallet synchronization complete:",fixed,"users normalized");
+  console.log("Primary USDT wallet synchronization complete:",fixed,"users normalized");
 }
 function setWalletBalance(user,currency,amount){
   const cur=normCurrency(currency),w=walletMap(user);
@@ -879,52 +873,23 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   const w=walletMap(user);
-  const accountCurrency=normCurrency(user.currency||"USDT");
-  let sourceCurrency=currency;
-  let available=Number(w[currency]||0);
-  let debitAmount=amount;
-
-  // If the requested currency has its own wallet, use it directly.
-  // Otherwise allow withdrawal in another supported currency by converting
-  // the user's active wallet balance instead of incorrectly returning
-  // "Insufficient balance".
-  if(!Number.isFinite(available)||available<amount){
-    const activeBalance=Number(w[accountCurrency] ?? user.balance ?? 0);
-    const convertedAvailable=convertCurrencyAmount(activeBalance,accountCurrency,currency);
-    if(convertedAvailable>=amount && currency!==accountCurrency && Number(w[currency]||0)<=0){
-      sourceCurrency=accountCurrency;
-      available=convertedAvailable;
-      debitAmount=convertCurrencyAmount(amount,currency,accountCurrency);
-    }else if(currency===accountCurrency && Number.isFinite(user.balance) && Number(user.balance)>available){
-      available=Number(user.balance);
-    }
-  }
-
-  if(available<amount)return res.status(400).json({
+  const debitUSDT=Number(convertCurrencyAmount(amount,currency,"USDT").toFixed(2));
+  const availableUSDT=Number(w.USDT||0);
+  if(!Number.isFinite(debitUSDT)||debitUSDT<=0)return res.status(400).json({success:false,message:"Invalid converted withdrawal amount"});
+  if(availableUSDT<debitUSDT)return res.status(400).json({
     success:false,message:"Insufficient balance",currency,
-    availableBalance:Number(available.toFixed(2)),balances:w,accountCurrency
+    availableBalance:Number(convertCurrencyAmount(availableUSDT,"USDT",currency).toFixed(2)),
+    balances:{USDT:availableUSDT},accountCurrency:normCurrency(user.currency||"USDT")
   });
-
-  if(sourceCurrency===currency){
-    w[currency]=Number((available-amount).toFixed(2));
-  }else{
-    const sourceAvailable=Number(w[sourceCurrency] ?? user.balance ?? 0);
-    if(sourceAvailable<debitAmount)return res.status(400).json({
-      success:false,message:"Insufficient balance",currency,
-      availableBalance:Number(convertCurrencyAmount(sourceAvailable,sourceCurrency,currency).toFixed(2)),
-      balances:w,accountCurrency
-    });
-    w[sourceCurrency]=Number((sourceAvailable-debitAmount).toFixed(2));
-  }
-  user.balances=w;
+  setWalletBalance(user,"USDT",Number((availableUSDT-debitUSDT).toFixed(2)));
   syncLegacyBalance(user);
   await user.save();
   const t=await Transaction.create({
     userId:req.auth.id,type:"withdrawal",amount,currency,
     method:String(req.body?.method||""),details:req.body?.details||{},
-    note:String(req.body?.note||""),status:"pending",reserved:true,debitedCurrency:sourceCurrency,debitedAmount:Number(debitAmount.toFixed(2))
+    note:String(req.body?.note||""),status:"pending",reserved:true,debitedCurrency:"USDT",debitedAmount:debitUSDT
   });
-  res.json({success:true,transaction:t,user:publicUser(user),debitedCurrency:sourceCurrency,debitedAmount:Number(debitAmount.toFixed(2))});
+  res.json({success:true,transaction:t,user:publicUser(user),debitedCurrency:"USDT",debitedAmount:debitUSDT});
 });
 
 app.get("/api/orders",auth,async(req,res)=>{
@@ -1112,9 +1077,11 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
   if(t.status!=="pending")return res.status(400).json({success:false,message:"Transaction already reviewed"});
   const user=await User.findById(t.userId);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
-  const currency=normCurrency(t.currency||user.currency);
   if(t.type==="withdrawal"&&t.reserved){
-    const w=walletMap(user);setWalletBalance(user,currency,Number(w[currency]||0)+Number(t.amount||0));syncLegacyBalance(user);await user.save();
+    const w=walletMap(user);
+    const refundUSDT=Number(t.debitedAmount||convertCurrencyAmount(Number(t.amount||0),normCurrency(t.currency||user.currency),"USDT"));
+    setWalletBalance(user,"USDT",Number((Number(w.USDT||0)+refundUSDT).toFixed(2)));
+    syncLegacyBalance(user);await user.save();
   }
   t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
   res.json({success:true,transaction:t,user:publicUser(user)});
@@ -1134,23 +1101,22 @@ app.post("/api/admin/users/:id/balance",auth,admin,async(req,res)=>{
   const user=await User.findById(req.params.id);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   const w=walletMap(user);
-  const current=Number(w[currency]||0);
-  const next=Number((current+amount).toFixed(2));
-  if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency,currentBalance:current});
-  setWalletBalance(user,currency,next);
-  // user.balance is always the balance for user.currency; other currencies
-  // remain in user.balances without being overwritten.
+  const current=Number(w.USDT||0);
+  const deltaUSDT=Number(convertCurrencyAmount(amount,currency,"USDT").toFixed(2));
+  const next=Number((current+deltaUSDT).toFixed(2));
+  if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency:"USDT",currentBalance:current});
+  setWalletBalance(user,"USDT",next);
   syncLegacyBalance(user);
   await user.save();
   const fresh=await User.findById(user._id);
   res.json({
     success:true,
     user:publicUser(fresh),
-    currency,
-    amount:Number(amount.toFixed(2)),
+    currency:"USDT",
+    amount:deltaUSDT,
     previousBalance:current,
-    newBalance:Number(walletMap(fresh)[currency]||0),
-    balances:walletMap(fresh)
+    newBalance:Number(walletMap(fresh).USDT||0),
+    balances:{USDT:Number(walletMap(fresh).USDT||0)}
   });
 });
 app.get("/api/admin/products",auth,admin,async(req,res)=>{
