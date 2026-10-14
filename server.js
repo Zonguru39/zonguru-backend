@@ -113,7 +113,7 @@ const ProductSchema=new mongoose.Schema({
 const TransactionSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,type:String,amount:Number,
   currency:{type:String,default:"USDT"},
-  method:String,details:Object,status:{type:String,default:"pending"},
+  method:String,details:Object,proofImage:{type:String,default:""},status:{type:String,default:"pending"},
   note:String,rejectionReason:{type:String,default:""},
   reserved:{type:Boolean,default:false},
   debitedCurrency:{type:String,default:""},debitedAmount:{type:Number,default:0},
@@ -844,7 +844,11 @@ app.post("/api/products/:id/optimize",auth,async(req,res)=>{
 app.post("/api/deposits",auth,async(req,res)=>{
   const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
   if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
-  const t=await Transaction.create({userId:req.auth.id,type:"deposit",amount,currency,method:String(req.body?.method||""),details:req.body?.details||{},note:String(req.body?.note||""),status:"pending",reserved:false});
+  const method=String(req.body?.method||"");
+  const proofImage=String(req.body?.proofImage||"");
+  if(!["bank","crypto"].includes(method))return res.status(400).json({success:false,message:"Choose a valid deposit method"});
+  if(!proofImage.startsWith("data:image/")||proofImage.length>750000)return res.status(400).json({success:false,message:"Please attach a valid payment screenshot under the size limit"});
+  const t=await Transaction.create({userId:req.auth.id,type:"deposit",amount,currency,method,details:req.body?.details||{},proofImage,note:String(req.body?.note||""),status:"pending",reserved:false});
   res.json({success:true,transaction:t});
 });
 
