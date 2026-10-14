@@ -359,16 +359,18 @@ function convertCurrencyAmount(amount,fromCurrency,toCurrency){
 }
 function walletMap(user){
   const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
-  const out={};
-  for(const k of Object.keys(raw||{})){const n=Number(raw[k]);if(Number.isFinite(n))out[normCurrency(k)]=Number(n.toFixed(2));}
-  // USDT is the only stored account balance. Legacy accounts without a USDT
-  // entry are migrated using their former selected-currency amount.
-  if(!Object.prototype.hasOwnProperty.call(out,"USDT")){
+  const keys=Object.keys(raw).filter(k=>SUPPORTED_CURRENCIES.includes(String(k).toUpperCase())&&Number.isFinite(Number(raw[k])));
+  let primaryUSDT=0;
+  if(keys.length===1&&String(keys[0]).toUpperCase()==="USDT"){
+    primaryUSDT=Number(raw[keys[0]]||0);
+  }else if(keys.length){
+    primaryUSDT=keys.reduce((sum,k)=>sum+convertCurrencyAmount(Number(raw[k]||0),k,"USDT"),0);
+  }else{
     const cur=normCurrency(user.currency);
     const legacy=Number(user.balance||0);
-    out.USDT=Number((cur==="USDT"?legacy:convertCurrencyAmount(legacy,cur,"USDT")).toFixed(2));
+    primaryUSDT=cur==="USDT"?legacy:convertCurrencyAmount(legacy,cur,"USDT");
   }
-  return out;
+  return {USDT:Number(Number(primaryUSDT||0).toFixed(2))};
 }
 function normalizeWalletState(user){
   const w=walletMap(user);
