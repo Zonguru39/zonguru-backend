@@ -1035,6 +1035,20 @@ app.post("/api/admin/users/:id/vip",auth,admin,async(req,res)=>{
   await TaskProgress.deleteOne({userId:user._id});
   res.json({success:true,user:publicUser(user)});
 });
+app.get("/api/admin/transactions/:id/proof",auth,admin,async(req,res)=>{
+  try{
+    const t=await Transaction.findById(req.params.id).select("proofImage details type").lean();
+    if(!t)return res.status(404).json({success:false,message:"Transaction not found"});
+    const proofImage=String(t.proofImage||t.details?.proofImage||t.details?.screenshot||"");
+    if(!proofImage)return res.status(404).json({success:false,message:"No payment screenshot was saved with this transaction. This record has no image to display."});
+    if(!proofImage.startsWith("data:image/")&&!proofImage.startsWith("https://")&&!proofImage.startsWith("http://"))
+      return res.status(422).json({success:false,message:"The saved payment screenshot has an unsupported format."});
+    res.json({success:true,proofImage});
+  }catch(e){
+    console.error("load transaction proof",e);
+    res.status(500).json({success:false,message:"Unable to load payment screenshot"});
+  }
+});
 app.get("/api/admin/transactions",auth,admin,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find().sort({createdAt:-1})});
 });
