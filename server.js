@@ -37,10 +37,11 @@ function signUser(user){
 }
 function publicUser(user){
   const w=walletMap(user),cur=normCurrency(user.currency);
+  const primaryUSDT=Number(w.USDT||0);
   return {
     id:user._id, username:user.username, email:user.email, phone:user.phone,
-    emailVerified:true, role:user.role, balance:Number(w[cur]||0),
-    currency:cur, balances:w, totalProfit:user.totalProfit,
+    emailVerified:true, role:user.role, balance:Number(convertCurrencyAmount(primaryUSDT,"USDT",cur).toFixed(2)),
+    currency:cur, balances:{USDT:primaryUSDT}, totalProfit:user.totalProfit,
     referralCode:user.referralCode, referredBy:user.referredBy||null,
     frozenAmount:Number(user.frozenAmount||0),
     creditPoints:Number(user.creditPoints||0),
@@ -113,6 +114,7 @@ const ProductSchema=new mongoose.Schema({
 const TransactionSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,type:String,amount:Number,
   currency:{type:String,default:"USDT"},
+  convertedAmountUSDT:{type:Number,default:null},
   method:String,details:Object,proofImage:{type:String,default:""},status:{type:String,default:"pending"},
   note:String,rejectionReason:{type:String,default:""},
   reserved:{type:Boolean,default:false},
@@ -359,15 +361,20 @@ function walletMap(user){
   const raw=(user.balances&&typeof user.balances==="object"&&!Array.isArray(user.balances))?user.balances:{};
   const out={};
   for(const k of Object.keys(raw||{})){const n=Number(raw[k]);if(Number.isFinite(n))out[normCurrency(k)]=Number(n.toFixed(2));}
-  const cur=normCurrency(user.currency);
-  // balances[currency] is the canonical wallet value; legacy user.balance is only a mirror.
-  if(!Object.prototype.hasOwnProperty.call(out,cur))out[cur]=Number(Number(user.balance||0).toFixed(2));
+  // USDT is the only stored account balance. Legacy accounts without a USDT
+  // entry are migrated using their former selected-currency amount.
+  if(!Object.prototype.hasOwnProperty.call(out,"USDT")){
+    const cur=normCurrency(user.currency);
+    const legacy=Number(user.balance||0);
+    out.USDT=Number((cur==="USDT"?legacy:convertCurrencyAmount(legacy,cur,"USDT")).toFixed(2));
+  }
   return out;
 }
 function normalizeWalletState(user){
   const w=walletMap(user);
-  user.balances=w;user.balance=Number(w[normCurrency(user.currency)]||0);
-  return w;
+  user.balances={USDT:Number(w.USDT||0)};
+  user.balance=Number(w.USDT||0);
+  return user.balances;
 }
 async function normalizeAllUserWallets(){
   const users=await User.find({}).lean();
@@ -396,12 +403,14 @@ function setWalletBalance(user,currency,amount){
   const cur=normCurrency(currency),w=walletMap(user);
   const n=Number(amount);
   if(!Number.isFinite(n)||n<0)throw new Error("Invalid balance amount");
-  w[cur]=Number(n.toFixed(2));user.balances=w;
-  if(normCurrency(user.currency)===cur)user.balance=w[cur];
+  w[cur]=Number(n.toFixed(2));
+  user.balances={USDT:Number(w.USDT||0)};
+  user.balance=Number(w.USDT||0);
 }
 function syncLegacyBalance(user){
-  const cur=normCurrency(user.currency),w=walletMap(user);
-  user.balances=w;user.balance=Number(w[cur]||0);
+  const w=walletMap(user);
+  user.balances={USDT:Number(w.USDT||0)};
+  user.balance=Number(w.USDT||0);
 }
 function auth(req,res,next){
   try{
@@ -855,7 +864,8 @@ app.post("/api/deposits",auth,async(req,res)=>{
     if(!proofImage.startsWith("data:image/")||proofImage.length>750000)return res.status(400).json({success:false,message:"Please attach a valid payment screenshot under the size limit"});
     const user=await User.findById(req.auth.id);
     if(!user)return res.status(404).json({success:false,message:"User not found"});
-    const t=await Transaction.create({userId:user._id,type:"deposit",amount:Number(amount.toFixed(2)),currency,method,details:req.body?.details||{},proofImage,note:String(req.body?.note||""),status:"pending",reserved:false});
+    const convertedAmountUSDT=Number(convertCurrencyAmount(amount,currency,"USDT").toFixed(2));
+    const t=await Transaction.create({userId:user._id,type:"deposit",amount:Number(amount.toFixed(2)),currency,convertedAmountUSDT,method,details:req.body?.details||{},proofImage,note:String(req.body?.note||""),status:"pending",reserved:false});
     res.json({success:true,transaction:t});
   }catch(e){
     console.error("submit deposit",e);
@@ -1072,17 +1082,23 @@ app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
     if(!SUPPORTED_CURRENCIES.includes(requestedCurrency))return res.status(400).json({success:false,message:"Unsupported transaction currency; balance was not changed"});
     const currency=requestedCurrency,w=walletMap(user),amount=Number(t.amount);
     if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid transaction amount; balance was not changed"});
-    // Deposit approvals credit the exact currency and amount recorded on the pending request.
-    // They do not convert the deposit into the user's currently selected display currency.
-    if(t.type==="deposit")setWalletBalance(user,currency,Number(w[currency]||0)+Number(amount.toFixed(2)));
+    let creditedAmountUSDT=null;
+    if(t.type==="deposit"){
+      creditedAmountUSDT=Number((Number.isFinite(Number(t.convertedAmountUSDT))&&t.convertedAmountUSDT!==null
+        ?Number(t.convertedAmountUSDT):convertCurrencyAmount(amount,currency,"USDT")).toFixed(2));
+      if(!Number.isFinite(creditedAmountUSDT)||creditedAmountUSDT<=0)return res.status(400).json({success:false,message:"Invalid converted USDT amount; balance was not changed"});
+      setWalletBalance(user,"USDT",Number(w.USDT||0)+creditedAmountUSDT);
+      t.convertedAmountUSDT=creditedAmountUSDT;
+    }
     if(t.type==="withdrawal" && !t.reserved){
-      const available=Number(w[currency]||0);
-      if(available<amount)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:available});
-      setWalletBalance(user,currency,Number((available-amount).toFixed(2)));
+      const debitUSDT=Number(convertCurrencyAmount(amount,currency,"USDT").toFixed(2));
+      const available=Number(w.USDT||0);
+      if(available<debitUSDT)return res.status(400).json({success:false,message:"Insufficient balance",currency,availableBalance:Number(convertCurrencyAmount(available,"USDT",currency).toFixed(2))});
+      setWalletBalance(user,"USDT",Number((available-debitUSDT).toFixed(2)));
     }
     syncLegacyBalance(user);await user.save();
     t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
-    res.json({success:true,transaction:t,user:publicUser(user),creditedCurrency:t.type==="deposit"?currency:undefined,creditedAmount:t.type==="deposit"?Number(amount.toFixed(2)):undefined});
+    res.json({success:true,transaction:t,user:publicUser(user),creditedCurrency:t.type==="deposit"?"USDT":undefined,creditedAmount:t.type==="deposit"?creditedAmountUSDT:undefined});
   }catch(e){
     console.error("approve transaction",e);
     res.status(500).json({success:false,message:"Unable to approve transaction. Please refresh and check transaction status before retrying."});
