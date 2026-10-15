@@ -1225,7 +1225,8 @@ async function ensureProductCatalog(){
 async function start(){
   if(!MONGO_URL)throw new Error("MONGO_URL is not configured");
   await mongoose.connect(MONGO_URL);
-  await normalizeAllUserWallets();
+  // Do not rewrite existing user balances during server startup. User balances
+  // must remain unchanged; wallet normalization requires an explicit, audited recovery.
   await ensureProductCatalog();
   console.log("MongoDB connected successfully");
   app.listen(PORT,()=>console.log(`Zonguru backend running on port ${PORT}`));
