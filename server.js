@@ -73,6 +73,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceEnabled:{type:Boolean,default:false},
   insufficientBalanceTaskNumber:{type:Number,default:0,min:0,max:5},
   insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
+  insufficientBalanceRemainingAmount:{type:Number,default:0,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   avatarUrl:{type:String,default:""},
   ownerAdminId:{type:String,default:null,index:true},
@@ -411,6 +412,14 @@ function syncLegacyBalance(user){
   user.balances={USDT:Number(w.USDT||0)};
   user.balance=Number(w.USDT||0);
 }
+function applyInsufficientBalanceCredit(user, amountUSDT){
+  const credit=Number(amountUSDT);
+  if(!user || !user.insufficientBalanceEnabled || !Number.isFinite(credit) || credit<=0) return;
+  const configured=Math.max(0,Number(user.insufficientBalanceRequiredAmount||0));
+  const stored=Number(user.insufficientBalanceRemainingAmount);
+  const remaining=Number.isFinite(stored) && stored>=0 ? stored : configured;
+  user.insufficientBalanceRemainingAmount=Number(Math.max(0,remaining-credit).toFixed(2));
+}
 function auth(req,res,next){
   try{
     const h=req.headers.authorization||"";
@@ -582,7 +591,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
       Boolean(user.insufficientBalanceEnabled) &&
       Number(user.insufficientBalanceTaskNumber||0)===taskNumber &&
       Number(user.insufficientBalanceRequiredAmount||0)>0;
-    const shortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+    const shortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
     const accountCurrency=normCurrency(user.currency||"USDT");
     const wallet=walletMap(user);
     const balance=Number(wallet[accountCurrency]||0);
@@ -790,10 +799,11 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     if(amount<=0)return res.status(400).json({success:false,message:"Product value is not configured"});
     const taskNumber=Number(task.completedIds.length||0)+1;
     const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
-    const specialTriggered=userRuleTriggered,configuredShortfall=userRuleTriggered?Number(user.insufficientBalanceRequiredAmount||0):0;
+    const specialTriggered=userRuleTriggered,configuredShortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
+    const remainingShortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
     const requiredBalance=userRuleTriggered?amount:(product.balanceGuardEnabled?amount:0);
-    if(requiredBalance>0&&Number(user.balance||0)<requiredBalance){
-      const availableBalance=Number(user.balance||0),difference=Math.max(0,requiredBalance-availableBalance);
+    if((userRuleTriggered&&remainingShortfall>0)||(requiredBalance>0&&Number(user.balance||0)<requiredBalance)){
+      const availableBalance=Number(user.balance||0),difference=Math.max(remainingShortfall,Math.max(0,requiredBalance-availableBalance));
       let pending=await Order.findOne({userId:user._id,productId:product._id,taskNumber,status:"pending"}).sort({createdAt:-1});
       if(!pending)pending=await Order.create({userId:user._id,productId:product._id,productName:product.name||"Product",amount,profitRate:rate,commission:0,baseCommission:amount*(rate/100),commissionMultiplier:1,availableBalance,shortfall:difference,taskNumber,reviewText:String(req.body?.reviewText||"").trim(),status:"pending"});
       return res.status(400).json({success:false,insufficientBalance:true,orderStatus:"pending",orderId:pending._id,specialTask:specialTriggered,message:"Insufficient balance. Please contact Customer Service.",orderAmount:amount,availableBalance,difference,shortfall:configuredShortfall||difference,taskNumber});
@@ -1072,6 +1082,7 @@ app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
         ?Number(t.convertedAmountUSDT):convertCurrencyAmount(amount,currency,"USDT")).toFixed(2));
       if(!Number.isFinite(creditedAmountUSDT)||creditedAmountUSDT<=0)return res.status(400).json({success:false,message:"Invalid converted USDT amount; balance was not changed"});
       setWalletBalance(user,"USDT",Number(w.USDT||0)+creditedAmountUSDT);
+      applyInsufficientBalanceCredit(user,creditedAmountUSDT);
       t.convertedAmountUSDT=creditedAmountUSDT;
     }
     if(t.type==="withdrawal" && !t.reserved){
@@ -1105,6 +1116,21 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
   t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
+app.get("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
+  const user=await User.findById(req.params.id);
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  res.json({success:true,rule:{enabled:Boolean(user.insufficientBalanceEnabled),taskNumber:Number(user.insufficientBalanceTaskNumber||0),requiredAmount:Number(user.insufficientBalanceRequiredAmount||0),remainingAmount:Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0),commissionMultiplier:Number(user.insufficientBalanceCommissionMultiplier||1)}});
+});
+app.post("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
+  const enabled=req.body?.enabled===true || String(req.body?.enabled).toLowerCase()==="true";
+  const taskNumber=Number(req.body?.taskNumber||0),requiredAmount=Number(req.body?.requiredAmount||0),commissionMultiplier=Number(req.body?.commissionMultiplier||1);
+  if(enabled&&(!Number.isInteger(taskNumber)||taskNumber<1||taskNumber>5))return res.status(400).json({success:false,message:"Task number must be between 1 and 5"});
+  if(enabled&&(!Number.isFinite(requiredAmount)||requiredAmount<=0))return res.status(400).json({success:false,message:"Required amount must be greater than 0"});
+  if(enabled&&(!Number.isFinite(commissionMultiplier)||commissionMultiplier<1||commissionMultiplier>20))return res.status(400).json({success:false,message:"Commission multiplier must be between 1 and 20x"});
+  const user=await User.findByIdAndUpdate(req.params.id,{$set:{insufficientBalanceEnabled:enabled,insufficientBalanceTaskNumber:enabled?taskNumber:0,insufficientBalanceRequiredAmount:enabled?Number(requiredAmount.toFixed(2)):0,insufficientBalanceRemainingAmount:enabled?Number(requiredAmount.toFixed(2)):0,insufficientBalanceCommissionMultiplier:enabled?commissionMultiplier:1}},{new:true,runValidators:true});
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  res.json({success:true,rule:{enabled:Boolean(user.insufficientBalanceEnabled),taskNumber:Number(user.insufficientBalanceTaskNumber||0),requiredAmount:Number(user.insufficientBalanceRequiredAmount||0),remainingAmount:Number(user.insufficientBalanceRemainingAmount||0),commissionMultiplier:Number(user.insufficientBalanceCommissionMultiplier||1)},user:publicUser(user)});
+});
 app.get("/api/admin/users/:id/balances",auth,admin,async(req,res)=>{
   const user=await User.findById(req.params.id);if(!user)return res.status(404).json({success:false,message:"User not found"});
   res.json({success:true,balances:walletMap(user)}); 
@@ -1125,6 +1151,7 @@ app.post("/api/admin/users/:id/balance",auth,admin,async(req,res)=>{
   const next=Number((current+deltaUSDT).toFixed(2));
   if(next<0)return res.status(400).json({success:false,message:"Balance cannot be negative",currency:"USDT",currentBalance:current});
   setWalletBalance(user,"USDT",next);
+  if(deltaUSDT>0) applyInsufficientBalanceCredit(user,deltaUSDT);
   syncLegacyBalance(user);
   await user.save();
   const fresh=await User.findById(user._id);
