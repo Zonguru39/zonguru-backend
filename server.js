@@ -73,7 +73,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceEnabled:{type:Boolean,default:false},
   insufficientBalanceTaskNumber:{type:Number,default:0,min:0,max:5},
   insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
-  insufficientBalanceRemainingAmount:{type:Number,default:0,min:0},
+  insufficientBalanceRemainingAmount:{type:Number,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   avatarUrl:{type:String,default:""},
   ownerAdminId:{type:String,default:null,index:true},
