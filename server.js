@@ -900,7 +900,7 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   syncLegacyBalance(user);
   await user.save();
   const t=await Transaction.create({
-    userId:req.auth.id,type:"withdrawal",amount,currency,
+    userId:req.auth.id,type:"withdrawal",amount,currency,convertedAmountUSDT:debitUSDT,
     method:String(req.body?.method||""),details:req.body?.details||{},
     note:String(req.body?.note||""),status:"pending",reserved:true,debitedCurrency:"USDT",debitedAmount:debitUSDT
   });
