@@ -1131,6 +1131,30 @@ app.post("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   res.json({success:true,rule:{enabled:Boolean(user.insufficientBalanceEnabled),taskNumber:Number(user.insufficientBalanceTaskNumber||0),requiredAmount:Number(user.insufficientBalanceRequiredAmount||0),remainingAmount:Number(user.insufficientBalanceRemainingAmount||0),commissionMultiplier:Number(user.insufficientBalanceCommissionMultiplier||1)},user:publicUser(user)});
 });
+app.post("/api/admin/users/:id/reset-password",auth,admin,async(req,res)=>{
+  try{
+    if(!mongoose.isValidObjectId(req.params.id))
+      return res.status(400).json({success:false,message:"Invalid user id"});
+    const newPassword=String(req.body?.newPassword||"");
+    if(newPassword.length<8)
+      return res.status(400).json({success:false,message:"New password must be at least 8 characters"});
+    if(newPassword.length>128)
+      return res.status(400).json({success:false,message:"New password is too long"});
+    const user=await User.findById(req.params.id);
+    if(!user || user.role!=="user")
+      return res.status(404).json({success:false,message:"Platform user not found"});
+    user.passwordHash=hashPassword(newPassword);
+    await user.save();
+    const saved=await User.findById(user._id).select("passwordHash role");
+    if(!saved || saved.role!=="user" || !verifyPassword(newPassword,saved.passwordHash))
+      return res.status(500).json({success:false,message:"Password reset could not be verified"});
+    console.log("Admin reset login password for user",String(user._id));
+    res.json({success:true,passwordChanged:true,message:"User login password reset successfully"});
+  }catch(e){
+    console.error("Admin reset user password",e);
+    res.status(500).json({success:false,message:"Unable to reset user password"});
+  }
+});
 app.get("/api/admin/users/:id/balances",auth,admin,async(req,res)=>{
   const user=await User.findById(req.params.id);if(!user)return res.status(404).json({success:false,message:"User not found"});
   res.json({success:true,balances:walletMap(user)}); 
