@@ -344,10 +344,10 @@ app.post("/api/auth/login",async(req,res)=>{
   }
 });
 
-const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP"];
+const SUPPORTED_CURRENCIES=["USDT","USD","MXN","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP","ARS","PKR"];
 // Rates are expressed as units of the currency per 1 USDT.
 // Wallet balances remain stored in their native currency.
-const CURRENCY_RATES={MXN:18.5,USD:1,EUR:0.86,GBP:0.75,CAD:1.38,AUD:1.51,JPY:148,CNY:7.1,SGD:1.28,THB:32.5,MYR:4.25,BRL:5.35,INR:88,EGP:51.75};
+const CURRENCY_RATES={MXN:18.5,USD:1,EUR:0.86,GBP:0.75,CAD:1.38,AUD:1.51,JPY:148,CNY:7.1,SGD:1.28,THB:32.5,MYR:4.25,BRL:5.35,INR:88,EGP:51.75,ARS:1400,PKR:280};
 function normCurrency(v){const x=String(v||"USDT").trim().toUpperCase();return SUPPORTED_CURRENCIES.includes(x)?x:"USDT";}
 function convertCurrencyAmount(amount,fromCurrency,toCurrency){
   const n=Number(amount);
@@ -490,7 +490,7 @@ app.patch("/api/me/profile",auth,async(req,res)=>{
     const phone=String(req.body?.phone??user.phone).trim();
     const avatarUrl=String((req.body?.avatarUrl ?? user.avatarUrl) || "").trim();
     const currency=String(req.body?.currency ?? user.currency ?? "USDT").trim().toUpperCase();
-    const allowedCurrencies=["USDT","MXN","USD","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP"];
+    const allowedCurrencies=["USDT","MXN","USD","EUR","GBP","CAD","AUD","JPY","CNY","SGD","THB","MYR","BRL","INR","EGP","ARS","PKR"];
     if(!allowedCurrencies.includes(currency))
       return res.status(400).json({success:false,message:"Unsupported currency"});
 
