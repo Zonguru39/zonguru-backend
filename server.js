@@ -924,6 +924,18 @@ app.post("/api/me/bank-accounts",auth,async(req,res)=>{
   }catch(e){console.error("bind bank account",e);res.status(500).json({success:false,message:"Unable to bind bank account"});}
 });
 
+app.post("/api/me/verify-withdrawal-password",auth,async(req,res)=>{
+  try{
+    const password=String(req.body?.password||"");
+    if(!password)return res.status(400).json({success:false,message:"Enter your withdrawal password"});
+    const user=await User.findById(req.auth.id).select("+withdrawalPasswordHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(!user.withdrawalPasswordHash)return res.status(409).json({success:false,code:"WITHDRAWAL_PASSWORD_REQUIRED",message:"Please set a withdrawal password first"});
+    if(!verifyPassword(password,user.withdrawalPasswordHash))return res.status(401).json({success:false,code:"INVALID_WITHDRAWAL_PASSWORD",message:"Incorrect withdrawal password"});
+    res.json({success:true,verified:true,message:"Withdrawal password verified successfully"});
+  }catch(e){console.error("verify withdrawal password",e);res.status(500).json({success:false,message:"Unable to verify withdrawal password"});}
+});
+
 app.post("/api/withdrawals",auth,async(req,res)=>{
   const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
   const user=await User.findById(req.auth.id).select("+withdrawalPasswordHash");
