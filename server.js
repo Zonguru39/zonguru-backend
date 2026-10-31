@@ -927,6 +927,27 @@ app.post("/api/me/change-withdrawal-password",auth,async(req,res)=>{
   }catch(e){console.error("change withdrawal password",e);res.status(500).json({success:false,message:"Unable to change withdrawal password"});}
 });
 
+app.post("/api/me/change-withdrawal-password",auth,async(req,res)=>{
+  try{
+    const currentPassword=String(req.body?.currentPassword||"");
+    const newPassword=String(req.body?.newPassword||"");
+    const confirmPassword=String(req.body?.confirmPassword||"");
+    if(!currentPassword)return res.status(400).json({success:false,message:"Enter your current withdrawal password"});
+    if(newPassword.length<6||newPassword.length>128)return res.status(400).json({success:false,message:"New withdrawal password must be 6 to 128 characters"});
+    if(newPassword!==confirmPassword)return res.status(400).json({success:false,message:"New withdrawal passwords do not match"});
+    if(newPassword===currentPassword)return res.status(400).json({success:false,message:"New withdrawal password must be different"});
+    const user=await User.findById(req.auth.id).select("+withdrawalPasswordHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(!user.withdrawalPasswordHash)return res.status(409).json({success:false,code:"WITHDRAWAL_PASSWORD_REQUIRED",message:"No withdrawal password is set yet"});
+    if(!verifyPassword(currentPassword,user.withdrawalPasswordHash))return res.status(401).json({success:false,code:"INVALID_WITHDRAWAL_PASSWORD",message:"Current withdrawal password is incorrect"});
+    const updated=await User.updateOne({_id:user._id,withdrawalPasswordHash:user.withdrawalPasswordHash},{$set:{withdrawalPasswordHash:hashPassword(newPassword)}});
+    if(!updated.modifiedCount)return res.status(409).json({success:false,message:"Withdrawal password changed by another request. Please retry"});
+    const saved=await User.findById(user._id).select("+withdrawalPasswordHash");
+    if(!saved||!verifyPassword(newPassword,saved.withdrawalPasswordHash))return res.status(500).json({success:false,message:"New withdrawal password could not be verified"});
+    res.json({success:true,passwordChanged:true,message:"Withdrawal password changed successfully"});
+  }catch(e){console.error("change withdrawal password",e);res.status(500).json({success:false,message:"Unable to change withdrawal password"});}
+});
+
 app.post("/api/me/bank-accounts",auth,async(req,res)=>{
   try{
     const bankName=String(req.body?.bankName||"").trim(),accountName=String(req.body?.accountName||"").trim(),accountNumber=String(req.body?.accountNumber||"").trim(),additionalDetails=String(req.body?.additionalDetails||"").trim();
