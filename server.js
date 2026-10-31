@@ -58,6 +58,8 @@ const UserSchema=new mongoose.Schema({
   phone:{type:String,required:true,trim:true},
   emailVerified:{type:Boolean,default:true},
   passwordHash:{type:String,required:true},
+  withdrawalPasswordHash:{type:String,default:""},
+  bankAccounts:[{bankName:{type:String,required:true},accountName:{type:String,required:true},accountNumber:{type:String,required:true},additionalDetails:{type:String,default:""},createdAt:{type:Date,default:Date.now}}],
   role:{type:String,default:"user"},
   balance:{type:Number,default:0},
   currency:{type:String,default:"USDT"},
@@ -882,11 +884,61 @@ app.post("/api/deposits",auth,async(req,res)=>{
   }
 });
 
+app.get("/api/me/withdrawal-security",auth,async(req,res)=>{
+  try{
+    const user=await User.findById(req.auth.id).select("withdrawalPasswordHash bankAccounts");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    res.json({success:true,withdrawalPasswordSet:Boolean(user.withdrawalPasswordHash),bankAccounts:(user.bankAccounts||[]).map(a=>({id:a._id,bankName:a.bankName,accountName:a.accountName,accountNumber:a.accountNumber,additionalDetails:a.additionalDetails||"",createdAt:a.createdAt}))});
+  }catch(e){console.error("load withdrawal security",e);res.status(500).json({success:false,message:"Unable to load withdrawal settings"});}
+});
+app.post("/api/me/withdrawal-password",auth,async(req,res)=>{
+  try{
+    const password=String(req.body?.password||""),confirm=String(req.body?.confirmPassword||"");
+    if(password.length<6||password.length>128)return res.status(400).json({success:false,message:"Withdrawal password must be 6 to 128 characters"});
+    if(password!==confirm)return res.status(400).json({success:false,message:"Withdrawal passwords do not match"});
+    const user=await User.findById(req.auth.id).select("+withdrawalPasswordHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(user.withdrawalPasswordHash)return res.status(409).json({success:false,message:"Withdrawal password is already set"});
+    user.withdrawalPasswordHash=hashPassword(password);
+    await user.save();
+    const saved=await User.findById(user._id).select("withdrawalPasswordHash");
+    if(!saved||!verifyPassword(password,saved.withdrawalPasswordHash))return res.status(500).json({success:false,message:"Could not verify saved withdrawal password"});
+    res.json({success:true,withdrawalPasswordSet:true,message:"Withdrawal password saved"});
+  }catch(e){console.error("set withdrawal password",e);res.status(500).json({success:false,message:"Unable to save withdrawal password"});}
+});
+app.post("/api/me/bank-accounts",auth,async(req,res)=>{
+  try{
+    const bankName=String(req.body?.bankName||"").trim(),accountName=String(req.body?.accountName||"").trim(),accountNumber=String(req.body?.accountNumber||"").trim(),additionalDetails=String(req.body?.additionalDetails||"").trim();
+    if(!bankName||!accountName||!accountNumber)return res.status(400).json({success:false,message:"Bank name, account name and account number are required"});
+    if(bankName.length>100||accountName.length>120||accountNumber.length>80||additionalDetails.length>500)return res.status(400).json({success:false,message:"Bank information is too long"});
+    const user=await User.findById(req.auth.id).select("withdrawalPasswordHash bankAccounts");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(!user.withdrawalPasswordHash)return res.status(409).json({success:false,code:"WITHDRAWAL_PASSWORD_REQUIRED",message:"Set a withdrawal password before binding a bank account"});
+    const duplicate=(user.bankAccounts||[]).some(a=>String(a.bankName||"").toLowerCase()===bankName.toLowerCase()&&String(a.accountNumber||"")===accountNumber);
+    if(duplicate)return res.status(409).json({success:false,message:"This bank account is already bound"});
+    user.bankAccounts=user.bankAccounts||[];
+    user.bankAccounts.push({bankName,accountName,accountNumber,additionalDetails,createdAt:new Date()});
+    await user.save();
+    const accounts=(user.bankAccounts||[]).map(a=>({id:a._id,bankName:a.bankName,accountName:a.accountName,accountNumber:a.accountNumber,additionalDetails:a.additionalDetails||"",createdAt:a.createdAt}));
+    res.json({success:true,bankAccounts:accounts,message:"Bank account bound successfully"});
+  }catch(e){console.error("bind bank account",e);res.status(500).json({success:false,message:"Unable to bind bank account"});}
+});
+
 app.post("/api/withdrawals",auth,async(req,res)=>{
   const amount=Number(req.body?.amount||0),currency=normCurrency(req.body?.currency);
-  const user=await User.findById(req.auth.id);
-  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
+  const user=await User.findById(req.auth.id).select("+withdrawalPasswordHash");
+  const withdrawalPassword=String(req.body?.withdrawalPassword||"");
   if(!user)return res.status(404).json({success:false,message:"User not found"});
+  if(!user.withdrawalPasswordHash)return res.status(409).json({success:false,code:"WITHDRAWAL_PASSWORD_REQUIRED",message:"Please set a withdrawal password first"});
+  if(!verifyPassword(withdrawalPassword,user.withdrawalPasswordHash))return res.status(401).json({success:false,code:"INVALID_WITHDRAWAL_PASSWORD",message:"Incorrect withdrawal password"});
+  const method=String(req.body?.method||"").toLowerCase();
+  let withdrawalDetails=req.body?.details||{};
+  if(method==="bank"){
+    const bankAccount=(user.bankAccounts||[]).id(String(req.body?.bankAccountId||""));
+    if(!bankAccount)return res.status(409).json({success:false,code:"BANK_ACCOUNT_REQUIRED",message:"Please bind or select a bank account first"});
+    withdrawalDetails={bankName:bankAccount.bankName,accountName:bankAccount.accountName,accountNumber:bankAccount.accountNumber,additionalDetails:bankAccount.additionalDetails||"",bankAccountId:String(bankAccount._id)};
+  }else if(method!=="crypto")return res.status(400).json({success:false,message:"Choose a valid withdrawal method"});
+  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({success:false,message:"Invalid amount"});
   const w=walletMap(user);
   const debitUSDT=Number(convertCurrencyAmount(amount,currency,"USDT").toFixed(2));
   const availableUSDT=Number(w.USDT||0);
@@ -901,7 +953,7 @@ app.post("/api/withdrawals",auth,async(req,res)=>{
   await user.save();
   const t=await Transaction.create({
     userId:req.auth.id,type:"withdrawal",amount,currency,convertedAmountUSDT:debitUSDT,
-    method:String(req.body?.method||""),details:req.body?.details||{},
+    method,details:withdrawalDetails,
     note:String(req.body?.note||""),status:"pending",reserved:true,debitedCurrency:"USDT",debitedAmount:debitUSDT
   });
   res.json({success:true,transaction:t,user:publicUser(user),debitedCurrency:"USDT",debitedAmount:debitUSDT});
