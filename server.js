@@ -966,6 +966,24 @@ app.post("/api/me/bank-accounts",auth,async(req,res)=>{
   }catch(e){console.error("bind bank account",e);res.status(500).json({success:false,message:"Unable to bind bank account"});}
 });
 
+app.patch("/api/me/bank-accounts/:id",auth,async(req,res)=>{
+  try{
+    const bankName=String(req.body?.bankName||"").trim(),accountName=String(req.body?.accountName||"").trim(),accountNumber=String(req.body?.accountNumber||"").trim(),additionalDetails=String(req.body?.additionalDetails||"").trim();
+    if(!bankName||!accountName||!accountNumber)return res.status(400).json({success:false,message:"Bank name, account name and account number are required"});
+    if(bankName.length>100||accountName.length>120||accountNumber.length>80||additionalDetails.length>500)return res.status(400).json({success:false,message:"Bank information is too long"});
+    const user=await User.findById(req.auth.id).select("bankAccounts");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    const account=(user.bankAccounts||[]).id(String(req.params.id||""));
+    if(!account)return res.status(404).json({success:false,message:"Saved bank account not found"});
+    const duplicate=(user.bankAccounts||[]).some(a=>String(a._id)!==String(account._id)&&String(a.bankName||"").toLowerCase()===bankName.toLowerCase()&&String(a.accountNumber||"")===accountNumber);
+    if(duplicate)return res.status(409).json({success:false,message:"This bank account is already bound"});
+    account.bankName=bankName;account.accountName=accountName;account.accountNumber=accountNumber;account.additionalDetails=additionalDetails;
+    await user.save();
+    const bankAccounts=(user.bankAccounts||[]).map(a=>({id:a._id,bankName:a.bankName,accountName:a.accountName,accountNumber:a.accountNumber,additionalDetails:a.additionalDetails||"",createdAt:a.createdAt}));
+    res.json({success:true,bankAccounts,message:"Bank account updated successfully"});
+  }catch(e){console.error("update bank account",e);res.status(500).json({success:false,message:"Unable to update bank account"});}
+});
+
 app.post("/api/me/verify-withdrawal-password",auth,async(req,res)=>{
   try{
     const password=String(req.body?.password||"");
