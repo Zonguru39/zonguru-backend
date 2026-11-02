@@ -1162,7 +1162,9 @@ app.get("/api/auth/validate-invite/:code",async(req,res)=>{
 
 /* Admin */
 app.get("/api/admin/users",auth,admin,async(req,res)=>{
-  res.json({success:true,users:await User.find().sort({createdAt:-1})});
+  const users=await User.find().sort({createdAt:-1}).lean();
+  const safeUsers=users.map(({passwordHash,withdrawalPasswordHash,...user})=>user);
+  res.json({success:true,users:safeUsers});
 });
 app.post("/api/admin/users/:id/vip",auth,admin,async(req,res)=>{
   const level=Number(req.body?.vipLevel);
@@ -1254,6 +1256,43 @@ app.post("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>
   const user=await User.findByIdAndUpdate(req.params.id,{$set:{insufficientBalanceEnabled:enabled,insufficientBalanceTaskNumber:enabled?taskNumber:0,insufficientBalanceRequiredAmount:enabled?Number(requiredAmount.toFixed(2)):0,insufficientBalanceRemainingAmount:enabled?Number(requiredAmount.toFixed(2)):0,insufficientBalanceCommissionMultiplier:enabled?commissionMultiplier:1}},{new:true,runValidators:true});
   if(!user)return res.status(404).json({success:false,message:"User not found"});
   res.json({success:true,rule:{enabled:Boolean(user.insufficientBalanceEnabled),taskNumber:Number(user.insufficientBalanceTaskNumber||0),requiredAmount:Number(user.insufficientBalanceRequiredAmount||0),remainingAmount:Number(user.insufficientBalanceRemainingAmount||0),commissionMultiplier:Number(user.insufficientBalanceCommissionMultiplier||1)},user:publicUser(user)});
+});
+
+app.post("/api/admin/users/:id/reset-withdrawal-password",auth,admin,async(req,res)=>{
+  try{
+    if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});
+    const newPassword=String(req.body?.newPassword||"");
+    if(newPassword.length<6||newPassword.length>128)return res.status(400).json({success:false,message:"Withdrawal password must be 6 to 128 characters"});
+    const user=await User.findById(req.params.id).select("+withdrawalPasswordHash");
+    if(!user||user.role!=="user")return res.status(404).json({success:false,message:"Platform user not found"});
+    user.withdrawalPasswordHash=hashPassword(newPassword);
+    await user.save();
+    const saved=await User.findById(user._id).select("+withdrawalPasswordHash role");
+    if(!saved||saved.role!=="user"||!verifyPassword(newPassword,saved.withdrawalPasswordHash))return res.status(500).json({success:false,message:"Withdrawal password reset could not be verified"});
+    console.log("Admin reset withdrawal password for user",String(user._id));
+    res.json({success:true,passwordChanged:true,message:"User withdrawal password reset successfully"});
+  }catch(e){console.error("Admin reset user withdrawal password",e);res.status(500).json({success:false,message:"Unable to reset withdrawal password"});}
+});
+app.put("/api/admin/users/:id/bank-accounts",auth,admin,async(req,res)=>{
+  try{
+    if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});
+    if(!Array.isArray(req.body?.bankAccounts)||req.body.bankAccounts.length>20)return res.status(400).json({success:false,message:"Bank accounts must be a list of up to 20 accounts"});
+    const bankAccounts=[];
+    for(const item of req.body.bankAccounts){
+      const bankName=String(item?.bankName||"").trim(),accountName=String(item?.accountName||"").trim(),accountNumber=String(item?.accountNumber||"").trim(),additionalDetails=String(item?.additionalDetails||"").trim();
+      if(!bankName||!accountName||!accountNumber)return res.status(400).json({success:false,message:"Bank name, account name and account number are required"});
+      if(bankName.length>120||accountName.length>120||accountNumber.length>160||additionalDetails.length>1000)return res.status(400).json({success:false,message:"Bank account information is too long"});
+      const entry={bankName,accountName,accountNumber,additionalDetails};
+      if(item._id&&mongoose.isValidObjectId(item._id))entry._id=item._id;
+      if(item.createdAt&&Number.isFinite(new Date(item.createdAt).getTime()))entry.createdAt=new Date(item.createdAt);
+      bankAccounts.push(entry);
+    }
+    const user=await User.findById(req.params.id);
+    if(!user||user.role!=="user")return res.status(404).json({success:false,message:"Platform user not found"});
+    user.bankAccounts=bankAccounts;await user.save();
+    const saved=await User.findById(user._id).select("bankAccounts");
+    res.json({success:true,message:"User bank information updated",bankAccounts:(saved.bankAccounts||[]).map(a=>({id:a._id,bankName:a.bankName,accountName:a.accountName,accountNumber:a.accountNumber,additionalDetails:a.additionalDetails||"",createdAt:a.createdAt}))});
+  }catch(e){console.error("Admin update user bank accounts",e);res.status(500).json({success:false,message:"Unable to update bank information"});}
 });
 app.post("/api/admin/users/:id/reset-password",auth,admin,async(req,res)=>{
   try{
