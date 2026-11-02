@@ -472,7 +472,6 @@ app.get("/api/me/announcements",auth,async(req,res)=>{
   try{
     const rows=await Announcement.find({
       active:true,
-      dismissedBy:{$ne:req.auth.id},
       $or:[{audience:"all"},{audience:"selected",recipientIds:req.auth.id}]
     }).sort({createdAt:-1}).lean();
     res.json({success:true,announcements:rows.map(a=>({_id:a._id,title:a.title,text:a.text,image:a.image,createdAt:a.createdAt}))});
@@ -480,13 +479,10 @@ app.get("/api/me/announcements",auth,async(req,res)=>{
 });
 app.post("/api/me/announcements/:id/dismiss",auth,async(req,res)=>{
   try{
-    const a=await Announcement.findOneAndUpdate({
-      _id:req.params.id,active:true,
-      $or:[{audience:"all"},{audience:"selected",recipientIds:req.auth.id}]
-    },{$addToSet:{dismissedBy:req.auth.id}},{new:true});
+    const a=await Announcement.findOne({_id:req.params.id,active:true,$or:[{audience:"all"},{audience:"selected",recipientIds:req.auth.id}]}).select("_id").lean();
     if(!a)return res.status(404).json({success:false,message:"Announcement not found"});
-    res.json({success:true,dismissed:true});
-  }catch(e){console.error("dismiss announcement",e);res.status(500).json({success:false,message:"Unable to dismiss announcement"});}
+    res.json({success:true,closed:true});
+  }catch(e){console.error("close announcement",e);res.status(500).json({success:false,message:"Unable to close announcement"});}
 });
 app.get("/api/me",auth,async(req,res)=>{
   try{
