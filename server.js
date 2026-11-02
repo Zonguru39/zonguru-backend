@@ -135,6 +135,18 @@ const User=mongoose.model("User",UserSchema);
 const Product=mongoose.model("Product",ProductSchema);
 const Transaction=mongoose.model("Transaction",TransactionSchema);
 const Message=mongoose.model("Message",MessageSchema);
+const AnnouncementSchema=new mongoose.Schema({
+  title:{type:String,default:""},
+  text:{type:String,default:""},
+  image:{type:String,default:""},
+  audience:{type:String,enum:["all","selected"],default:"all",index:true},
+  recipientIds:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
+  dismissedBy:[{type:mongoose.Schema.Types.ObjectId,ref:"User"}],
+  active:{type:Boolean,default:true,index:true},
+  createdBy:{type:String,default:"admin"},
+  createdAt:{type:Date,default:Date.now}
+});
+const Announcement=mongoose.model("Announcement",AnnouncementSchema);
 const TaskProgressSchema=new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,unique:true},
   productIds:[mongoose.Schema.Types.ObjectId],
@@ -456,6 +468,26 @@ async function userProfitPeriods(userId,now=new Date()){
   for(const row of rows){const t=new Date(row.createdAt||0).getTime(),profit=Number(row.commission||0);if(!Number.isFinite(profit))continue;if(t>=w.monthStart.getTime())month+=profit;if(t>=w.weekStart.getTime())week+=profit;if(t>=w.dayStart.getTime())today+=profit;}
   return {todayProfit:Number(today.toFixed(2)),weeklyProfit:Number(week.toFixed(2)),monthlyProfit:Number(month.toFixed(2))};
 }
+app.get("/api/me/announcements",auth,async(req,res)=>{
+  try{
+    const rows=await Announcement.find({
+      active:true,
+      dismissedBy:{$ne:req.auth.id},
+      $or:[{audience:"all"},{audience:"selected",recipientIds:req.auth.id}]
+    }).sort({createdAt:-1}).lean();
+    res.json({success:true,announcements:rows.map(a=>({_id:a._id,title:a.title,text:a.text,image:a.image,createdAt:a.createdAt}))});
+  }catch(e){console.error("load user announcements",e);res.status(500).json({success:false,message:"Unable to load announcements"});}
+});
+app.post("/api/me/announcements/:id/dismiss",auth,async(req,res)=>{
+  try{
+    const a=await Announcement.findOneAndUpdate({
+      _id:req.params.id,active:true,
+      $or:[{audience:"all"},{audience:"selected",recipientIds:req.auth.id}]
+    },{$addToSet:{dismissedBy:req.auth.id}},{new:true});
+    if(!a)return res.status(404).json({success:false,message:"Announcement not found"});
+    res.json({success:true,dismissed:true});
+  }catch(e){console.error("dismiss announcement",e);res.status(500).json({success:false,message:"Unable to dismiss announcement"});}
+});
 app.get("/api/me",auth,async(req,res)=>{
   try{
     const user=await User.findById(req.auth.id);
@@ -1161,6 +1193,39 @@ app.get("/api/auth/validate-invite/:code",async(req,res)=>{
 });
 
 /* Admin */
+app.get("/api/admin/announcements",auth,admin,async(req,res)=>{
+  try{
+    const rows=await Announcement.find().sort({createdAt:-1}).limit(100).lean();
+    res.json({success:true,announcements:rows});
+  }catch(e){res.status(500).json({success:false,message:"Unable to load announcements"});}
+});
+app.post("/api/admin/announcements",auth,admin,async(req,res)=>{
+  try{
+    const title=String(req.body?.title||"").trim().slice(0,120);
+    const text=String(req.body?.text||"").trim().slice(0,5000);
+    const image=String(req.body?.image||"").trim();
+    const audience=String(req.body?.audience||"all");
+    let recipientIds=[];
+    if(audience==="selected"){
+      recipientIds=[...new Set((Array.isArray(req.body?.recipientIds)?req.body.recipientIds:[]).map(x=>String(x).trim()).filter(x=>mongoose.isValidObjectId(x)))];
+      if(!recipientIds.length)return res.status(400).json({success:false,message:"Select at least one user"});
+      const count=await User.countDocuments({_id:{$in:recipientIds},role:"user"});
+      if(count!==recipientIds.length)return res.status(400).json({success:false,message:"One or more selected users were not found"});
+    }else if(audience!=="all")return res.status(400).json({success:false,message:"Invalid audience"});
+    if(!title&&!text&&!image)return res.status(400).json({success:false,message:"Add a title, message or image"});
+    if(image&&(!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(image)||image.length>1400000))
+      return res.status(400).json({success:false,message:"Image must be PNG, JPG, WEBP or GIF and smaller than 1 MB"});
+    const announcement=await Announcement.create({title,text,image,audience,recipientIds,createdBy:req.auth.username||"admin"});
+    res.status(201).json({success:true,announcement});
+  }catch(e){console.error("create announcement",e);res.status(500).json({success:false,message:"Unable to create announcement"});}
+});
+app.delete("/api/admin/announcements/:id",auth,admin,async(req,res)=>{
+  try{
+    const row=await Announcement.findByIdAndDelete(req.params.id);
+    if(!row)return res.status(404).json({success:false,message:"Announcement not found"});
+    res.json({success:true,deleted:true});
+  }catch(e){res.status(500).json({success:false,message:"Unable to delete announcement"});}
+});
 app.get("/api/admin/users",auth,admin,async(req,res)=>{
   const users=await User.find().sort({createdAt:-1}).lean();
   const safeUsers=users.map(({passwordHash,withdrawalPasswordHash,...user})=>user);
