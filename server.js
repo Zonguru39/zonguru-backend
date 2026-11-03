@@ -48,6 +48,7 @@ function publicUser(user){
     referralBonus:Number(user.referralBonus||0),
     creditScore:Number(user.creditScore??100),
     vipLevel:Number(user.vipLevel||0),
+    spinTickets:Number(user.spinTickets||0),
     avatarUrl:user.avatarUrl||""
   };
 }
@@ -77,6 +78,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceRequiredAmount:{type:Number,default:0,min:0},
   insufficientBalanceRemainingAmount:{type:Number,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
+  spinTickets:{type:Number,default:0,min:0},
   avatarUrl:{type:String,default:""},
   ownerAdminId:{type:String,default:null,index:true},
   ownerAdminUsername:{type:String,default:""},
@@ -843,7 +845,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const reviewText=String(req.body?.reviewText||"").trim();
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
     const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
-    task.completedIds.push(req.params.productId);task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
+    task.completedIds.push(req.params.productId);if(task.completedIds.length===5){user.spinTickets=Number(user.spinTickets||0)+1;}task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
     await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(user.balance||0),shortfall:0,taskNumber,reviewText,status:"completed"});
     // Credit profit to the user's active/native currency wallet.
     // Do not update only the legacy user.balance field: multi-currency
@@ -1305,6 +1307,10 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
   t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
+app.get("/api/me/lucky-spin/tickets",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id).select("spinTickets");if(!user)return res.status(404).json({success:false,message:"User not found"});res.set("Cache-Control","no-store");res.json({success:true,freeTickets:Number(user.spinTickets||0)})}catch(e){res.status(500).json({success:false,message:"Unable to load spin tickets"})}});
+
+app.post("/api/admin/users/:id/lucky-spin/tickets",auth,admin,async(req,res)=>{try{if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});const delta=Number(req.body?.delta);if(!Number.isInteger(delta)||delta===0||Math.abs(delta)>10000)return res.status(400).json({success:false,message:"Ticket adjustment must be a non-zero whole number between -10000 and 10000"});const user=await User.findOneAndUpdate({_id:req.params.id,role:"user",spinTickets:{$gte:Math.max(0,-delta)}},{$inc:{spinTickets:delta}},{new:true});if(!user)return res.status(404).json({success:false,message:"User not found or ticket balance would become negative"});res.json({success:true,userId:String(user._id),username:user.username,freeTickets:Number(user.spinTickets||0),message:"Lucky Spin tickets updated"})}catch(e){console.error("Admin ticket adjustment",e);res.status(500).json({success:false,message:"Unable to update spin tickets"})}});
+
 app.get("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
   const user=await User.findById(req.params.id);
   if(!user)return res.status(404).json({success:false,message:"User not found"});
