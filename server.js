@@ -1018,6 +1018,17 @@ app.patch("/api/me/bank-accounts/:id",auth,async(req,res)=>{
   }catch(e){console.error("update bank account",e);res.status(500).json({success:false,message:"Unable to update bank account"});}
 });
 
+app.delete("/api/me/bank-accounts/:id",auth,async(req,res)=>{
+ try{
+  const user=await User.findById(req.auth.id).select("bankAccounts");
+  if(!user)return res.status(404).json({success:false,message:"User not found"});
+  const account=(user.bankAccounts||[]).id(String(req.params.id||""));
+  if(!account)return res.status(404).json({success:false,message:"Saved bank account not found"});
+  account.deleteOne();await user.save();
+  const bankAccounts=(user.bankAccounts||[]).map(a=>({id:a._id,bankName:a.bankName,accountName:a.accountName,accountNumber:a.accountNumber,additionalDetails:a.additionalDetails||"",createdAt:a.createdAt}));
+  res.json({success:true,bankAccounts,message:"Bank account deleted successfully"});
+ }catch(e){console.error("delete bank account",e);res.status(500).json({success:false,message:"Unable to delete bank account"});}
+});
 app.post("/api/me/verify-withdrawal-password",auth,async(req,res)=>{
   try{
     const password=String(req.body?.password||"");
