@@ -845,7 +845,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const reviewText=String(req.body?.reviewText||"").trim();
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
     const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
-    task.completedIds.push(req.params.productId);if(task.completedIds.length===5){user.spinTickets=Number(user.spinTickets||0)+1;}task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
+    task.completedIds.push(req.params.productId);if(task.completedIds.length>0&&task.completedIds.length%5===0){user.spinTickets=Number(user.spinTickets||0)+1;}task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
     await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(user.balance||0),shortfall:0,taskNumber,reviewText,status:"completed"});
     // Credit profit to the user's active/native currency wallet.
     // Do not update only the legacy user.balance field: multi-currency
@@ -1308,6 +1308,15 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
 app.get("/api/me/lucky-spin/tickets",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id).select("spinTickets");if(!user)return res.status(404).json({success:false,message:"User not found"});res.set("Cache-Control","no-store");res.json({success:true,freeTickets:Number(user.spinTickets||0)})}catch(e){res.status(500).json({success:false,message:"Unable to load spin tickets"})}});
+
+app.post("/api/me/lucky-spin/spin",auth,async(req,res)=>{try{
+ const user=await User.findOneAndUpdate({_id:req.auth.id,role:"user",spinTickets:{$gt:0}},{$inc:{spinTickets:-1}},{new:true});
+ if(!user)return res.status(400).json({success:false,message:"You do not have any free spin tickets"});
+ const prizes=[{id:"no_reward",label:"No Rewards",amount:0,weight:80},{id:"usd10",label:"$10",amount:10,weight:12},{id:"usd50",label:"$50",amount:50,weight:6},{id:"usd1000",label:"$1,000",amount:1000,weight:1},{id:"iphone18promax",label:"iPhone 18 Pro Max",amount:0,weight:1}];
+ const total=prizes.reduce((n,p)=>n+p.weight,0);let pick=Math.random()*total;let prize=prizes.find(p=>(pick-=p.weight)<=0)||prizes[0];
+ let creditedUSDT=0;if(prize.amount>0){const balances=walletMap(user);const before=Number(balances.USDT||0);creditedUSDT=Number(prize.amount.toFixed(2));setWalletBalance(user,"USDT",Number((before+creditedUSDT).toFixed(2)));syncLegacyBalance(user);await user.save();}
+ res.set("Cache-Control","no-store");return res.json({success:true,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),user:publicUser(user)});
+ }catch(e){console.error("Lucky Spin draw failed",e);res.status(500).json({success:false,message:"Unable to complete spin"})}});
 
 app.post("/api/admin/users/:id/lucky-spin/tickets",auth,admin,async(req,res)=>{try{if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});const delta=Number(req.body?.delta);if(!Number.isInteger(delta)||delta===0||Math.abs(delta)>10000)return res.status(400).json({success:false,message:"Ticket adjustment must be a non-zero whole number between -10000 and 10000"});const user=await User.findOneAndUpdate({_id:req.params.id,role:"user",spinTickets:{$gte:Math.max(0,-delta)}},{$inc:{spinTickets:delta}},{new:true});if(!user)return res.status(404).json({success:false,message:"User not found or ticket balance would become negative"});res.json({success:true,userId:String(user._id),username:user.username,freeTickets:Number(user.spinTickets||0),message:"Lucky Spin tickets updated"})}catch(e){console.error("Admin ticket adjustment",e);res.status(500).json({success:false,message:"Unable to update spin tickets"})}});
 
