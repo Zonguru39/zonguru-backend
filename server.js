@@ -79,6 +79,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceRemainingAmount:{type:Number,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   spinTickets:{type:Number,default:0,min:0},
+  luckySpinMode:{type:String,enum:["random","no_reward","usd10","usd50","usd1000","iphone18promax","five_tickets"],default:"random"},
   avatarUrl:{type:String,default:""},
   ownerAdminId:{type:String,default:null,index:true},
   ownerAdminUsername:{type:String,default:""},
@@ -1312,12 +1313,35 @@ app.get("/api/me/lucky-spin/tickets",auth,async(req,res)=>{try{const user=await 
 app.post("/api/me/lucky-spin/spin",auth,async(req,res)=>{try{
  const user=await User.findOneAndUpdate({_id:req.auth.id,role:"user",spinTickets:{$gt:0}},{$inc:{spinTickets:-1}},{new:true});
  if(!user)return res.status(400).json({success:false,message:"You do not have any free spin tickets"});
- const prizes=[{id:"no_reward",label:"No Rewards",amount:0,weight:80},{id:"usd10",label:"$10",amount:10,weight:12},{id:"usd50",label:"$50",amount:50,weight:6},{id:"usd1000",label:"$1,000",amount:1000,weight:1},{id:"iphone18promax",label:"iPhone 18 Pro Max",amount:0,weight:1}];
- const total=prizes.reduce((n,p)=>n+p.weight,0);let pick=Math.random()*total;let prize=prizes.find(p=>(pick-=p.weight)<=0)||prizes[0];
- let creditedUSDT=0;if(prize.amount>0){const balances=walletMap(user);const before=Number(balances.USDT||0);creditedUSDT=Number(prize.amount.toFixed(2));setWalletBalance(user,"USDT",Number((before+creditedUSDT).toFixed(2)));syncLegacyBalance(user);await user.save();}
- res.set("Cache-Control","no-store");return res.json({success:true,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),user:publicUser(user)});
+ const prizes=[
+  {id:"no_reward",label:"No Rewards",amount:0,weight:79},
+  {id:"usd10",label:"$10",amount:10,weight:12},
+  {id:"usd50",label:"$50",amount:50,weight:6},
+  {id:"usd1000",label:"$1,000",amount:1000,weight:1},
+  {id:"iphone18promax",label:"iPhone 18 Pro Max",amount:0,weight:1},
+  {id:"five_tickets",label:"5 Tickets",amount:0,weight:1}
+ ];
+ const mode=["random","no_reward","usd10","usd50","usd1000","iphone18promax","five_tickets"].includes(user.luckySpinMode)?user.luckySpinMode:"random";
+ let prize;
+ if(mode==="random"){const total=prizes.reduce((n,p)=>n+p.weight,0);let pick=Math.random()*total;prize=prizes.find(p=>(pick-=p.weight)<=0)||prizes[0];}
+ else prize=prizes.find(p=>p.id===mode)||prizes[0];
+ let creditedUSDT=0;
+ if(prize.amount>0){const balances=walletMap(user),before=Number(balances.USDT||0);creditedUSDT=Number(prize.amount.toFixed(2));setWalletBalance(user,"USDT",Number((before+creditedUSDT).toFixed(2)));}
+ if(prize.id==="five_tickets")user.spinTickets=Number(user.spinTickets||0)+5;
+ if(prize.amount>0||prize.id==="five_tickets"){syncLegacyBalance(user);await user.save();}
+ res.set("Cache-Control","no-store");
+ return res.json({success:true,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),user:publicUser(user)});
  }catch(e){console.error("Lucky Spin draw failed",e);res.status(500).json({success:false,message:"Unable to complete spin"})}});
 
+app.post("/api/admin/users/:id/lucky-spin/setting",auth,admin,async(req,res)=>{try{
+ if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});
+ const mode=String(req.body?.mode||"");
+ const allowed=["random","no_reward","usd10","usd50","usd1000","iphone18promax","five_tickets"];
+ if(!allowed.includes(mode))return res.status(400).json({success:false,message:"Invalid wheel setting"});
+ const user=await User.findOneAndUpdate({_id:req.params.id,role:"user"},{$set:{luckySpinMode:mode}},{new:true});
+ if(!user)return res.status(404).json({success:false,message:"User not found"});
+ res.json({success:true,userId:String(user._id),username:user.username,mode:user.luckySpinMode});
+ }catch(e){console.error("Admin Lucky Spin setting",e);res.status(500).json({success:false,message:"Unable to save wheel setting"})}});
 app.post("/api/admin/users/:id/lucky-spin/tickets",auth,admin,async(req,res)=>{try{if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});const delta=Number(req.body?.delta);if(!Number.isInteger(delta)||delta===0||Math.abs(delta)>10000)return res.status(400).json({success:false,message:"Ticket adjustment must be a non-zero whole number between -10000 and 10000"});const user=await User.findOneAndUpdate({_id:req.params.id,role:"user",spinTickets:{$gte:Math.max(0,-delta)}},{$inc:{spinTickets:delta}},{new:true});if(!user)return res.status(404).json({success:false,message:"User not found or ticket balance would become negative"});res.json({success:true,userId:String(user._id),username:user.username,freeTickets:Number(user.spinTickets||0),message:"Lucky Spin tickets updated"})}catch(e){console.error("Admin ticket adjustment",e);res.status(500).json({success:false,message:"Unable to update spin tickets"})}});
 
 app.get("/api/admin/users/:id/insufficient-balance",auth,admin,async(req,res)=>{
