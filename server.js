@@ -79,6 +79,7 @@ const UserSchema=new mongoose.Schema({
   insufficientBalanceRemainingAmount:{type:Number,min:0},
   insufficientBalanceCommissionMultiplier:{type:Number,default:1,min:1,max:20},
   spinTickets:{type:Number,default:0,min:0},
+  spinHistory:[{spinId:{type:String,required:true},prizeId:{type:String,required:true},label:{type:String,required:true},amount:{type:Number,default:0},creditedUSDT:{type:Number,default:0},claimStatus:{type:String,enum:["unclaimed","claimed"],default:"unclaimed"},createdAt:{type:Date,default:Date.now},claimedAt:{type:Date,default:null}}],
   luckySpinMode:{type:String,enum:["random","no_reward","usd10","usd50","usd1000","iphone18promax","five_tickets"],default:"random"},
   avatarUrl:{type:String,default:""},
   ownerAdminId:{type:String,default:null,index:true},
@@ -1328,10 +1329,17 @@ app.post("/api/me/lucky-spin/spin",auth,async(req,res)=>{try{
  let creditedUSDT=0;
  if(prize.amount>0){const balances=walletMap(user),before=Number(balances.USDT||0);creditedUSDT=Number(prize.amount.toFixed(2));setWalletBalance(user,"USDT",Number((before+creditedUSDT).toFixed(2)));}
  if(prize.id==="five_tickets")user.spinTickets=Number(user.spinTickets||0)+5;
- if(prize.amount>0||prize.id==="five_tickets"){syncLegacyBalance(user);await user.save();}
+ const spinId=new mongoose.Types.ObjectId().toString();
+ user.spinHistory=user.spinHistory||[];
+ user.spinHistory.unshift({spinId,prizeId:prize.id,label:prize.label,amount:Number(prize.amount||0),creditedUSDT,claimStatus:"unclaimed",createdAt:new Date()});
+ if(user.spinHistory.length>200)user.spinHistory=user.spinHistory.slice(0,200);
+ syncLegacyBalance(user);await user.save();
  res.set("Cache-Control","no-store");
- return res.json({success:true,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),user:publicUser(user)});
+ return res.json({success:true,spinId,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),claimStatus:"unclaimed",user:publicUser(user)});
  }catch(e){console.error("Lucky Spin draw failed",e);res.status(500).json({success:false,message:"Unable to complete spin"})}});
+
+app.get("/api/me/lucky-spin/history",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id).select("spinHistory");if(!user)return res.status(404).json({success:false,message:"User not found"});res.set("Cache-Control","no-store");res.json({success:true,history:(user.spinHistory||[]).slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(x=>({spinId:x.spinId,prizeId:x.prizeId,label:x.label,amount:Number(x.amount||0),creditedUSDT:Number(x.creditedUSDT||0),claimStatus:x.claimStatus||"unclaimed",createdAt:x.createdAt,claimedAt:x.claimedAt||null}))})}catch(e){console.error("Lucky Spin history",e);res.status(500).json({success:false,message:"Unable to load spin history"})}});
+app.post("/api/me/lucky-spin/:spinId/claim",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id);if(!user)return res.status(404).json({success:false,message:"User not found"});const item=(user.spinHistory||[]).find(x=>x.spinId===req.params.spinId);if(!item)return res.status(404).json({success:false,message:"Spin result not found"});if(item.claimStatus!=="claimed"){item.claimStatus="claimed";item.claimedAt=new Date();await user.save();}res.json({success:true,spinId:item.spinId,prizeId:item.prizeId,claimStatus:item.claimStatus,claimedAt:item.claimedAt})}catch(e){console.error("Lucky Spin claim",e);res.status(500).json({success:false,message:"Unable to claim spin result"})}});
 
 app.post("/api/admin/users/:id/lucky-spin/setting",auth,admin,async(req,res)=>{try{
  if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid user id"});
