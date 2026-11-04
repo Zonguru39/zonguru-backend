@@ -630,7 +630,11 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     const shortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
     const accountCurrency=normCurrency(user.currency||"USDT");
     const wallet=walletMap(user);
-    const balance=Number(wallet[accountCurrency]||0);
+    // The database wallet is canonical USDT. Convert it for display and
+    // task-price calculations instead of reading a non-existent MXN wallet key.
+    const balanceUSDT=Number(wallet.USDT||0);
+    const balance=Number(convertCurrencyAmount(balanceUSDT,"USDT",accountCurrency).toFixed(2));
+    const displayShortfall=Number(convertCurrencyAmount(shortfall,"USDT",accountCurrency).toFixed(2));
 
     let current=null;
     if(task.currentProductId){
@@ -649,13 +653,27 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
     // If the admin rule was changed after this product was created,
     // refresh the current amount so Task 3 immediately reflects the rule.
     if(current && userRuleTriggered){
-      const desiredAmount=Math.round((balance+shortfall)*100)/100;
+      const desiredAmount=Math.round((balance+displayShortfall)*100)/100;
       if(Math.abs(Number(task.currentProductAmount||0)-desiredAmount)>0.009){
         task.currentProductAmount=desiredAmount;
         task.currentTaskNumber=taskNumber;
         task.updatedAt=new Date();
         await task.save();
       }
+    }
+
+    // Repair a previously-created task whose amount was stored as zero while
+    // the selected display currency had no separate wallet key (e.g. MXN).
+    if(current && !userRuleTriggered && Number(task.currentProductAmount||0)<=0 && balance>0){
+      const tier=Math.max(1,Math.min(5,Number(current.valueTier||3)));
+      const tierRanges={1:[0.15,0.45],2:[0.25,0.60],3:[0.35,0.72],4:[0.45,0.82],5:[0.55,0.90]};
+      const range=tierRanges[tier]||tierRanges[3];
+      const upper=Math.max(0,balance*range[1]);
+      const lower=Math.max(0,Math.min(upper,balance*range[0]));
+      task.currentProductAmount=Math.round((lower+Math.random()*Math.max(0,upper-lower))*100)/100;
+      task.currentTaskNumber=taskNumber;
+      task.updatedAt=new Date();
+      await task.save();
     }
 
     if(!current){
