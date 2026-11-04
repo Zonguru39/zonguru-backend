@@ -737,7 +737,7 @@ app.get("/api/tasks/current",auth,async(req,res)=>{
 
       let amount=0;
       if(userRuleTriggered){
-        amount=Math.round((balance+shortfall)*100)/100;
+        amount=Math.round((balance+displayShortfall)*100)/100;
       }else{
         const range=tierRanges[tier]||tierRanges[3];
         const upper=Math.max(0,balance*range[1]);
@@ -855,9 +855,13 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const userRuleTriggered=Boolean(user.insufficientBalanceEnabled)&&Number(user.insufficientBalanceTaskNumber||0)===taskNumber&&Number(user.insufficientBalanceRequiredAmount||0)>0;
     const specialTriggered=userRuleTriggered,configuredShortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
     const remainingShortfall=userRuleTriggered?Math.max(0,Number(user.insufficientBalanceRemainingAmount ?? user.insufficientBalanceRequiredAmount ?? 0)):0;
-    const requiredBalance=userRuleTriggered?amount:(product.balanceGuardEnabled?amount:0);
-    if((userRuleTriggered&&remainingShortfall>0)||(requiredBalance>0&&Number(user.balance||0)<requiredBalance)){
-      const availableBalance=Number(user.balance||0),difference=Math.max(remainingShortfall,Math.max(0,requiredBalance-availableBalance));
+    const accountCurrency=normCurrency(user.currency||"USDT");
+    const requiredBalanceUSDT=convertCurrencyAmount(amount,accountCurrency,"USDT");
+    const requiredBalance=userRuleTriggered?requiredBalanceUSDT:(product.balanceGuardEnabled?requiredBalanceUSDT:0);
+    const availableBalanceUSDT=Number(walletMap(user).USDT||0);
+    const remainingShortfallUSDT=remainingShortfall;
+    if((userRuleTriggered&&remainingShortfallUSDT>0)||(requiredBalance>0&&availableBalanceUSDT<requiredBalance)){
+      const availableBalance=Number(convertCurrencyAmount(availableBalanceUSDT,"USDT",accountCurrency).toFixed(2)),difference=Math.max(convertCurrencyAmount(remainingShortfallUSDT,"USDT",accountCurrency),Math.max(0,amount-availableBalance));
       let pending=await Order.findOne({userId:user._id,productId:product._id,taskNumber,status:"pending"}).sort({createdAt:-1});
       if(!pending)pending=await Order.create({userId:user._id,productId:product._id,productName:product.name||"Product",amount,profitRate:rate,commission:0,baseCommission:amount*(rate/100),commissionMultiplier:1,availableBalance,shortfall:difference,taskNumber,reviewText:String(req.body?.reviewText||"").trim(),status:"pending"});
       return res.status(400).json({success:false,insufficientBalance:true,orderStatus:"pending",orderId:pending._id,specialTask:specialTriggered,message:"Insufficient balance. Please contact Customer Service.",orderAmount:amount,availableBalance,difference,shortfall:configuredShortfall||difference,taskNumber});
@@ -865,17 +869,15 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const reviewText=String(req.body?.reviewText||"").trim();
     if(reviewText.length>1000)return res.status(400).json({success:false,message:"Review is too long"});
     const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
+    const commissionUSDT=Number(convertCurrencyAmount(commission,accountCurrency,"USDT").toFixed(2));
     task.completedIds.push(req.params.productId);if(task.completedIds.length>0&&task.completedIds.length%5===0){user.spinTickets=Number(user.spinTickets||0)+1;}task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
-    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(user.balance||0),shortfall:0,taskNumber,reviewText,status:"completed"});
-    // Credit profit to the user's active/native currency wallet.
-    // Do not update only the legacy user.balance field: multi-currency
-    // accounts keep their real balances in user.balances[currency].
-    const accountCurrency=normCurrency(user.currency||"USDT");
+    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(convertCurrencyAmount(availableBalanceUSDT,"USDT",accountCurrency).toFixed(2)),shortfall:0,taskNumber,reviewText,status:"completed"});
+    // USDT remains the sole canonical stored balance. Convert the displayed
+    // currency commission back to USDT before crediting the account.
     const wallet=walletMap(user);
-    const beforeBalance=Number(wallet[accountCurrency]||0);
-    const creditedBalance=Number((beforeBalance+commission).toFixed(2));
-    setWalletBalance(user,accountCurrency,creditedBalance);
-    user.totalProfit=Number((Number(user.totalProfit||0)+commission).toFixed(2));
+    const creditedBalance=Number((Number(wallet.USDT||0)+commissionUSDT).toFixed(2));
+    setWalletBalance(user,"USDT",creditedBalance);
+    user.totalProfit=Number((Number(user.totalProfit||0)+commissionUSDT).toFixed(2));
     syncLegacyBalance(user);
     await user.save();
     const updatedUser=await User.findById(user._id);
@@ -885,7 +887,8 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     res.json({
       success:true,completed,total:5,taskComplete:completed>=5,
       commission,
-      creditedBalance:Number(finalWallet[accountCurrency]||0),
+      commissionUSDT,
+      creditedBalance:Number(convertCurrencyAmount(finalWallet.USDT||0,"USDT",accountCurrency).toFixed(2)),
       currency:accountCurrency,
       balances:finalWallet,
       totalProfit:Number(updatedUser.totalProfit||0),
