@@ -1134,7 +1134,7 @@ app.get("/api/orders",auth,async(req,res)=>{
 });
 
 app.get("/api/admin/bonuses",auth,admin,async(req,res)=>{
- try{const rows=await Bonus.find().sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
+ try{const filter={};if(req.auth?.adminType!=="superadmin"){const ids=await User.find({role:"user",ownerAdminId:String(req.auth.id)}).distinct("_id");filter.userId={$in:ids};}const rows=await Bonus.find(filter).sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
  catch(e){console.error("admin bonuses",e);res.status(500).json({success:false,message:"Unable to load bonuses"});}
 });
 app.post("/api/admin/bonuses",auth,admin,async(req,res)=>{
@@ -1147,11 +1147,11 @@ app.post("/api/admin/bonuses",auth,admin,async(req,res)=>{
   if(!Number.isFinite(amount)||amount<=0||amount>1000000)return res.status(400).json({success:false,message:"Enter a valid bonus amount in USDT"});
   if(!Number.isFinite(expiresAt.getTime())||expiresAt<=new Date())return res.status(400).json({success:false,message:"Expiry must be a future date and time"});
   let users;
-  if(target==="all")users=await User.find({role:"user"}).select("_id").lean();
+  if(target==="all"){const filter={role:"user"};if(req.auth?.adminType!=="superadmin")filter.ownerAdminId=String(req.auth.id);users=await User.find(filter).select("_id").lean();}
   else{
    const ids=Array.isArray(req.body?.userIds)?req.body.userIds.map(String).filter(mongoose.isValidObjectId):[];
    if(!ids.length)return res.status(400).json({success:false,message:"Select at least one user"});
-   users=await User.find({_id:{$in:ids},role:"user"}).select("_id").lean();
+   const filter={_id:{$in:ids},role:"user"};if(req.auth?.adminType!=="superadmin")filter.ownerAdminId=String(req.auth.id);users=await User.find(filter).select("_id").lean();
   }
   if(!users.length)return res.status(400).json({success:false,message:"No eligible users found"});
   const docs=users.map(u=>({userId:u._id,createdBy:String(req.auth?.id||"admin"),title,message,amountUSDT:Number(amount.toFixed(2)),expiresAt,status:"active"}));
