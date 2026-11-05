@@ -1133,6 +1133,21 @@ app.get("/api/orders",auth,async(req,res)=>{
   }catch(e){res.status(500).json({success:false,message:"Unable to load order history"});}
 });
 
+
+app.post("/api/admin/notifications",auth,admin,async(req,res)=>{
+ try{
+  const title=String(req.body?.title||"Admin message").trim().slice(0,120);
+  const message=String(req.body?.message||"").trim().slice(0,2000);
+  if(!message)return res.status(400).json({success:false,message:"Notification message is required"});
+  const target=String(req.body?.target||"all");let users;
+  if(target==="all"){const filter={role:"user"};if(req.auth?.adminType!=="superadmin")filter.ownerAdminId=String(req.auth.id);users=await User.find(filter).select("_id").lean();}
+  else{const ids=Array.isArray(req.body?.userIds)?req.body.userIds.map(String).filter(mongoose.isValidObjectId):[];if(!ids.length)return res.status(400).json({success:false,message:"Select at least one user"});const filter={_id:{$in:ids},role:"user"};if(req.auth?.adminType!=="superadmin")filter.ownerAdminId=String(req.auth.id);users=await User.find(filter).select("_id").lean();}
+  if(!users.length)return res.status(400).json({success:false,message:"No eligible users found"});
+  await Notification.insertMany(users.map(u=>({userId:u._id,type:"admin_message",title,text:message,metadata:{}})));
+  res.json({success:true,count:users.length});
+ }catch(e){console.error("admin notification",e);res.status(500).json({success:false,message:"Unable to send notification"});}
+});
+
 app.get("/api/admin/bonuses",auth,admin,async(req,res)=>{
  try{const filter={};if(req.auth?.adminType!=="superadmin"){const ids=await User.find({role:"user",ownerAdminId:String(req.auth.id)}).distinct("_id");filter.userId={$in:ids};}const rows=await Bonus.find(filter).sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
  catch(e){console.error("admin bonuses",e);res.status(500).json({success:false,message:"Unable to load bonuses"});}
