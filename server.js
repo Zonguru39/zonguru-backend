@@ -1149,7 +1149,7 @@ app.post("/api/admin/notifications",auth,admin,async(req,res)=>{
 });
 
 app.get("/api/admin/bonuses",auth,admin,async(req,res)=>{
- try{const filter={};if(req.auth?.adminType!=="superadmin"){const ids=await User.find({role:"user",ownerAdminId:String(req.auth.id)}).distinct("_id");filter.userId={$in:ids};}const rows=await Bonus.find(filter).sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
+ try{await Bonus.updateMany({status:"active",expiresAt:{$lte:new Date()},claimedAt:null},{$set:{status:"expired"}});const filter={};if(req.auth?.adminType!=="superadmin"){const ids=await User.find({role:"user",ownerAdminId:String(req.auth.id)}).distinct("_id");filter.userId={$in:ids};}const rows=await Bonus.find(filter).sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
  catch(e){console.error("admin bonuses",e);res.status(500).json({success:false,message:"Unable to load bonuses"});}
 });
 app.post("/api/admin/bonuses",auth,admin,async(req,res)=>{
@@ -1214,8 +1214,9 @@ app.post("/api/me/bonuses/:id/claim",auth,async(req,res)=>{
 app.get("/api/me/notifications",auth,async(req,res)=>{
   try{
     const rows=await Notification.find({userId:req.auth.id}).sort({createdAt:-1}).limit(100).lean();
+    const unreadCount=await Notification.countDocuments({userId:req.auth.id,read:false});
     res.set("Cache-Control","no-store");
-    res.json({success:true,notifications:rows,unreadCount:rows.filter(x=>!x.read).length});
+    res.json({success:true,notifications:rows,unreadCount});
   }catch(e){console.error("load notifications",e);res.status(500).json({success:false,message:"Unable to load notifications"});}
 });
 app.post("/api/me/notifications/:id/read",auth,async(req,res)=>{
