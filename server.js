@@ -1230,7 +1230,8 @@ app.post("/api/me/notifications/read-all",auth,async(req,res)=>{
   try{await Notification.updateMany({userId:req.auth.id,read:false},{$set:{read:true}});res.json({success:true});}
   catch(e){res.status(500).json({success:false,message:"Unable to mark notifications as read"});}
 });
-\napp.get("/api/transactions",auth,async(req,res)=>{
+
+app.get("/api/transactions",auth,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find({userId:req.auth.id}).sort({createdAt:-1})});
 });
 app.get("/api/messages",auth,async(req,res)=>{
