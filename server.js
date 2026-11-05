@@ -128,6 +128,18 @@ const TransactionSchema=new mongoose.Schema({
   debitedCurrency:{type:String,default:""},debitedAmount:{type:Number,default:0},
   createdAt:{type:Date,default:Date.now},reviewedAt:Date
 });
+const BonusSchema=new mongoose.Schema({
+ userId:{type:mongoose.Schema.Types.ObjectId,required:true,index:true},
+ createdBy:{type:String,default:"admin"},
+ title:{type:String,default:"Bonus"},
+ message:{type:String,default:""},
+ amountUSDT:{type:Number,required:true,min:0.01},
+ expiresAt:{type:Date,required:true,index:true},
+ status:{type:String,enum:["active","claimed","expired"],default:"active",index:true},
+ claimedAt:{type:Date,default:null},
+ createdAt:{type:Date,default:Date.now}
+},{collection:"user_bonuses"});
+const Bonus=mongoose.model("Bonus",BonusSchema);
 const NotificationSchema=new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,required:true,index:true},
   type:{type:String,default:"system",index:true},
@@ -1120,6 +1132,70 @@ app.get("/api/orders",auth,async(req,res)=>{
     res.json({success:true,orders});
   }catch(e){res.status(500).json({success:false,message:"Unable to load order history"});}
 });
+
+app.get("/api/admin/bonuses",auth,admin,async(req,res)=>{
+ try{const rows=await Bonus.find().sort({createdAt:-1}).limit(500).lean();res.json({success:true,bonuses:rows});}
+ catch(e){console.error("admin bonuses",e);res.status(500).json({success:false,message:"Unable to load bonuses"});}
+});
+app.post("/api/admin/bonuses",auth,admin,async(req,res)=>{
+ try{
+  const title=String(req.body?.title||"Bonus").trim().slice(0,120);
+  const message=String(req.body?.message||"").trim().slice(0,2000);
+  const amount=Number(req.body?.amountUSDT);
+  const expiresAt=new Date(req.body?.expiresAt);
+  const target=String(req.body?.target||"all");
+  if(!Number.isFinite(amount)||amount<=0||amount>1000000)return res.status(400).json({success:false,message:"Enter a valid bonus amount in USDT"});
+  if(!Number.isFinite(expiresAt.getTime())||expiresAt<=new Date())return res.status(400).json({success:false,message:"Expiry must be a future date and time"});
+  let users;
+  if(target==="all")users=await User.find({role:"user"}).select("_id").lean();
+  else{
+   const ids=Array.isArray(req.body?.userIds)?req.body.userIds.map(String).filter(mongoose.isValidObjectId):[];
+   if(!ids.length)return res.status(400).json({success:false,message:"Select at least one user"});
+   users=await User.find({_id:{$in:ids},role:"user"}).select("_id").lean();
+  }
+  if(!users.length)return res.status(400).json({success:false,message:"No eligible users found"});
+  const docs=users.map(u=>({userId:u._id,createdBy:String(req.auth?.id||"admin"),title,message,amountUSDT:Number(amount.toFixed(2)),expiresAt,status:"active"}));
+  const created=await Bonus.insertMany(docs);
+  await Notification.insertMany(users.map(u=>({userId:u._id,type:"bonus_reward",title,text:message||"A cash bonus is available. Open Notifications to claim it.",metadata:{bonusId:String(created.find(x=>String(x.userId)===String(u._id))._id),amountUSDT:Number(amount.toFixed(2)),expiresAt}})));
+  res.json({success:true,count:created.length});
+ }catch(e){console.error("create bonuses",e);res.status(500).json({success:false,message:"Unable to create bonuses"});}
+});
+app.get("/api/me/bonuses",auth,async(req,res)=>{
+ try{
+  const now=new Date();
+  await Bonus.updateMany({userId:req.auth.id,status:"active",expiresAt:{$lte:now},claimedAt:null},{$set:{status:"expired"}});
+  const rows=await Bonus.find({userId:req.auth.id}).sort({createdAt:-1}).limit(100).lean();
+  res.set("Cache-Control","no-store");res.json({success:true,bonuses:rows});
+ }catch(e){res.status(500).json({success:false,message:"Unable to load bonuses"});}
+});
+app.post("/api/me/bonuses/:id/claim",auth,async(req,res)=>{
+ let session;
+ try{
+  session=await mongoose.startSession();let result;
+  await session.withTransaction(async()=>{
+   const now=new Date();
+   const bonus=await Bonus.findOne({_id:req.params.id,userId:req.auth.id}).session(session);
+   if(!bonus)throw Object.assign(new Error("Bonus not found"),{status:404});
+   if(bonus.status==="claimed"||bonus.claimedAt)throw Object.assign(new Error("Bonus already claimed"),{status:409});
+   if(bonus.status==="expired"||bonus.expiresAt<=now){
+    await Bonus.updateOne({_id:bonus._id,userId:req.auth.id,status:"active"},{$set:{status:"expired"}},{session});
+    throw Object.assign(new Error("Bonus has expired"),{status:410});
+   }
+   const claimed=await Bonus.updateOne({_id:bonus._id,userId:req.auth.id,status:"active",claimedAt:null,expiresAt:{$gt:now}},{$set:{status:"claimed",claimedAt:now}},{session});
+   if(!claimed.modifiedCount)throw Object.assign(new Error("Bonus is no longer available"),{status:409});
+   const user=await User.findById(req.auth.id).session(session);
+   if(!user)throw Object.assign(new Error("User not found"),{status:404});
+   const wallet=walletMap(user),amount=Number(bonus.amountUSDT);
+   setWalletBalance(user,"USDT",Number((Number(wallet.USDT||0)+amount).toFixed(2)));
+   syncLegacyBalance(user);await user.save({session});
+   await Transaction.create([{userId:user._id,type:"bonus",amount,currency:"USDT",convertedAmountUSDT:amount,status:"approved",note:"Bonus claimed: "+bonus.title,reviewedAt:now}],{session});
+   result={amountUSDT:amount,bonusId:String(bonus._id),user:publicUser(user)};
+  });
+  res.json({success:true,...result});
+ }catch(e){console.error("claim bonus",e);res.status(e.status||500).json({success:false,message:e.message||"Unable to claim bonus"});}
+ finally{if(session)await session.endSession();}
+});
+
 app.get("/api/me/notifications",auth,async(req,res)=>{
   try{
     const rows=await Notification.find({userId:req.auth.id}).sort({createdAt:-1}).limit(100).lean();
