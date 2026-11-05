@@ -1353,7 +1353,7 @@ app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
     }
     syncLegacyBalance(user);await user.save();
     t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
-    await Notification.create({userId:user._id,type:t.type==="deposit"?"deposit_approved":"withdrawal_approved",title:t.type==="deposit"?"Deposit approved":"Withdrawal approved",text:t.type==="deposit"?"Your deposit has been accepted and credited to your USDT balance.":"Your withdrawal request has been approved.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),creditedUSDT:t.type==="deposit"?creditedAmountUSDT:undefined}});
+    try{await Notification.create({userId:user._id,type:t.type==="deposit"?"deposit_approved":"withdrawal_approved",title:t.type==="deposit"?"Deposit approved":"Withdrawal approved",text:t.type==="deposit"?"Your deposit has been accepted and credited to your USDT balance.":"Your withdrawal request has been approved.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),creditedUSDT:t.type==="deposit"?creditedAmountUSDT:undefined}});}catch(notificationError){console.error("approval notification failed",notificationError.message);}
     res.json({success:true,transaction:t,user:publicUser(user),creditedCurrency:t.type==="deposit"?"USDT":undefined,creditedAmount:t.type==="deposit"?creditedAmountUSDT:undefined});
   }catch(e){
     console.error("approve transaction",e);
@@ -1375,7 +1375,7 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
     syncLegacyBalance(user);await user.save();
   }
   t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
-  await Notification.create({userId:user._id,type:t.type==="withdrawal"?"withdrawal_rejected":"deposit_rejected",title:t.type==="withdrawal"?"Withdrawal rejected":"Deposit rejected",text:reason||"Your transaction request was rejected by Admin.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),reason}});
+  try{await Notification.create({userId:user._id,type:t.type==="withdrawal"?"withdrawal_rejected":"deposit_rejected",title:t.type==="withdrawal"?"Withdrawal rejected":"Deposit rejected",text:reason||"Your transaction request was rejected by Admin.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),reason}});}catch(notificationError){console.error("rejection notification failed",notificationError.message);}
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
 app.get("/api/me/lucky-spin/tickets",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id).select("spinTickets");if(!user)return res.status(404).json({success:false,message:"User not found"});res.set("Cache-Control","no-store");res.json({success:true,freeTickets:Number(user.spinTickets||0)})}catch(e){res.status(500).json({success:false,message:"Unable to load spin tickets"})}});
@@ -1404,6 +1404,7 @@ app.post("/api/me/lucky-spin/spin",auth,async(req,res)=>{try{
  await Notification.create({userId:user._id,type:"lucky_spin",title:"Lucky Spin result",text:"You received: "+prize.label+(creditedUSDT>0?" ("+creditedUSDT.toFixed(2)+" USDT credited)":"."),metadata:{spinId,prizeId:prize.id,label:prize.label,creditedUSDT}});
  if(user.spinHistory.length>200)user.spinHistory=user.spinHistory.slice(0,200);
  syncLegacyBalance(user);await user.save();
+ try{await Notification.create({userId:user._id,type:"lucky_spin",title:"Lucky Spin result",text:"You received: "+prize.label+(creditedUSDT>0?" ("+creditedUSDT.toFixed(2)+" USDT credited)":""),metadata:{spinId,prizeId:prize.id,label:prize.label,creditedUSDT}});}catch(notificationError){console.error("Lucky Spin notification failed",notificationError.message);}
  res.set("Cache-Control","no-store");
  return res.json({success:true,spinId,prize:{id:prize.id,label:prize.label,amount:prize.amount},creditedUSDT,freeTickets:Number(user.spinTickets||0),claimStatus:"unclaimed",user:publicUser(user)});
  }catch(e){console.error("Lucky Spin draw failed",e);res.status(500).json({success:false,message:"Unable to complete spin"})}});
