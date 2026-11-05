@@ -128,6 +128,16 @@ const TransactionSchema=new mongoose.Schema({
   debitedCurrency:{type:String,default:""},debitedAmount:{type:Number,default:0},
   createdAt:{type:Date,default:Date.now},reviewedAt:Date
 });
+const NotificationSchema=new mongoose.Schema({
+  userId:{type:mongoose.Schema.Types.ObjectId,required:true,index:true},
+  type:{type:String,default:"system",index:true},
+  title:{type:String,default:""},
+  text:{type:String,default:""},
+  metadata:{type:mongoose.Schema.Types.Mixed,default:{}},
+  read:{type:Boolean,default:false,index:true},
+  createdAt:{type:Date,default:Date.now,index:true}
+},{collection:"notifications"});
+const Notification=mongoose.model("Notification",NotificationSchema);
 const MessageSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,subject:String,text:String,
   image:{type:String,default:""},
@@ -357,6 +367,13 @@ app.post("/api/auth/login",async(req,res)=>{
       await user.save();
     }
 
+    const loginAt=new Date();
+    const forwarded=String(req.headers["x-forwarded-for"]||"").split(",")[0].trim();
+    const rawIp=forwarded||String(req.ip||req.socket?.remoteAddress||"unknown");
+    const safeIp=rawIp.replace(/^::ffff:/,"").slice(0,64);
+    const ua=String(req.headers["user-agent"]||"Unknown device").slice(0,300);
+    try{await Notification.create({userId:user._id,type:"login_security",title:"New login",text:"A login to your account was recorded.",metadata:{loginAt,device:ua,ip:safeIp}});}
+    catch(logError){console.error("login security notification failed",logError.message);}
     res.json({success:true,token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("login",e);
@@ -1103,7 +1120,25 @@ app.get("/api/orders",auth,async(req,res)=>{
     res.json({success:true,orders});
   }catch(e){res.status(500).json({success:false,message:"Unable to load order history"});}
 });
-app.get("/api/transactions",auth,async(req,res)=>{
+app.get("/api/me/notifications",auth,async(req,res)=>{
+  try{
+    const rows=await Notification.find({userId:req.auth.id}).sort({createdAt:-1}).limit(100).lean();
+    res.set("Cache-Control","no-store");
+    res.json({success:true,notifications:rows,unreadCount:rows.filter(x=>!x.read).length});
+  }catch(e){console.error("load notifications",e);res.status(500).json({success:false,message:"Unable to load notifications"});}
+});
+app.post("/api/me/notifications/:id/read",auth,async(req,res)=>{
+  try{
+    const r=await Notification.updateOne({_id:req.params.id,userId:req.auth.id},{$set:{read:true}});
+    if(!r.matchedCount)return res.status(404).json({success:false,message:"Notification not found"});
+    res.json({success:true});
+  }catch(e){res.status(500).json({success:false,message:"Unable to mark notification as read"});}
+});
+app.post("/api/me/notifications/read-all",auth,async(req,res)=>{
+  try{await Notification.updateMany({userId:req.auth.id,read:false},{$set:{read:true}});res.json({success:true});}
+  catch(e){res.status(500).json({success:false,message:"Unable to mark notifications as read"});}
+});
+\napp.get("/api/transactions",auth,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find({userId:req.auth.id}).sort({createdAt:-1})});
 });
 app.get("/api/messages",auth,async(req,res)=>{
@@ -1318,6 +1353,7 @@ app.post("/api/admin/transactions/:id/approve",auth,admin,async(req,res)=>{
     }
     syncLegacyBalance(user);await user.save();
     t.status="approved";t.reviewedAt=new Date();t.note=String(req.body?.note||t.note||"");await t.save();
+    await Notification.create({userId:user._id,type:t.type==="deposit"?"deposit_approved":"withdrawal_approved",title:t.type==="deposit"?"Deposit approved":"Withdrawal approved",text:t.type==="deposit"?"Your deposit has been accepted and credited to your USDT balance.":"Your withdrawal request has been approved.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),creditedUSDT:t.type==="deposit"?creditedAmountUSDT:undefined}});
     res.json({success:true,transaction:t,user:publicUser(user),creditedCurrency:t.type==="deposit"?"USDT":undefined,creditedAmount:t.type==="deposit"?creditedAmountUSDT:undefined});
   }catch(e){
     console.error("approve transaction",e);
@@ -1339,6 +1375,7 @@ app.post("/api/admin/transactions/:id/reject",auth,admin,async(req,res)=>{
     syncLegacyBalance(user);await user.save();
   }
   t.status="rejected";t.rejectionReason=reason;t.note=reason;t.reviewedAt=new Date();await t.save();
+  await Notification.create({userId:user._id,type:t.type==="withdrawal"?"withdrawal_rejected":"deposit_rejected",title:t.type==="withdrawal"?"Withdrawal rejected":"Deposit rejected",text:reason||"Your transaction request was rejected by Admin.",metadata:{transactionId:String(t._id),amount:Number(t.amount||0),currency:String(t.currency||"USDT"),reason}});
   res.json({success:true,transaction:t,user:publicUser(user)});
 });
 app.get("/api/me/lucky-spin/tickets",auth,async(req,res)=>{try{const user=await User.findById(req.auth.id).select("spinTickets");if(!user)return res.status(404).json({success:false,message:"User not found"});res.set("Cache-Control","no-store");res.json({success:true,freeTickets:Number(user.spinTickets||0)})}catch(e){res.status(500).json({success:false,message:"Unable to load spin tickets"})}});
@@ -1364,6 +1401,7 @@ app.post("/api/me/lucky-spin/spin",auth,async(req,res)=>{try{
  const spinId=new mongoose.Types.ObjectId().toString();
  user.spinHistory=user.spinHistory||[];
  user.spinHistory.unshift({spinId,prizeId:prize.id,label:prize.label,amount:Number(prize.amount||0),creditedUSDT,claimStatus:"unclaimed",createdAt:new Date()});
+ await Notification.create({userId:user._id,type:"lucky_spin",title:"Lucky Spin result",text:"You received: "+prize.label+(creditedUSDT>0?" ("+creditedUSDT.toFixed(2)+" USDT credited)":"."),metadata:{spinId,prizeId:prize.id,label:prize.label,creditedUSDT}});
  if(user.spinHistory.length>200)user.spinHistory=user.spinHistory.slice(0,200);
  syncLegacyBalance(user);await user.save();
  res.set("Cache-Control","no-store");
