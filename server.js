@@ -363,16 +363,31 @@ app.post("/api/auth/register",async(req,res)=>{
     res.status(500).json({success:false,message:e.message||"Registration failed"});
   }
 });
-/* Login: username OR email + password */
+/* Login: username/email OR phone number + password */
 app.post("/api/auth/login",async(req,res)=>{
   try{
     const username=String(req.body?.username||"").trim();
+    const loginType=String(req.body?.loginType||"email").toLowerCase();
     const password=String(req.body?.password||"");
-    const user=await User.findOne({
-      $or:[{username},{email:emailOf(username)}]
-    });
+    let user=null;
+
+    if(loginType==="phone"){
+      const digits=username.replace(/\D/g,"");
+      if(digits.length<6)
+        return res.status(400).json({success:false,message:"Enter a valid phone number"});
+      const phonePattern=new RegExp("^\\+?[\\s().-]*"+digits.split("").join("[\\s().-]*")+"$");
+      const phoneMatches=await User.find({phone:phonePattern}).limit(2);
+      if(phoneMatches.length>1)
+        return res.status(409).json({success:false,message:"This phone number is linked to more than one account. Please use email or username."});
+      user=phoneMatches[0]||null;
+    }else{
+      user=await User.findOne({
+        $or:[{username},{email:emailOf(username)}]
+      });
+    }
+
     if(!user||!verifyPassword(password,user.passwordHash))
-      return res.status(401).json({success:false,message:"Invalid username/email or password"});
+      return res.status(401).json({success:false,message:"Invalid login details or password"});
 
     if(!user.emailVerified){
       user.emailVerified=true;
