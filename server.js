@@ -12,7 +12,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type","Authorization"]
 }));
 app.options("*", cors());
-app.use(express.json({limit:"2mb"}));
+app.use(express.json({limit:"14mb"}));
 app.use(express.urlencoded({extended:false}));
 
 const PORT = process.env.PORT || 3000;
@@ -252,7 +252,7 @@ app.get("/health",async(req,res)=>{
 app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"online",version:"live-chat-v1"}));
 
 app.get("/api/public/events",async(req,res)=>{try{const setting=await PlatformSetting.findOne({key:"events_content"}).lean();res.set("Cache-Control","no-store");const v=setting?.value||{};res.json({success:true,event:{title:String(v.title||"Salary List"),text:String(v.text||""),image:String(v.image||""),updatedAt:setting?.updatedAt||null}})}catch(e){res.status(500).json({success:false,message:"Failed to load Events content"})}});
-app.put("/api/internal/events",async(req,res)=>{try{const key=String(req.headers["x-deposit-settings-key"]||"");if(!process.env.DEPOSIT_SETTINGS_KEY||key!==process.env.DEPOSIT_SETTINGS_KEY)return res.status(401).json({success:false,message:"Unauthorized"});const title=String(req.body?.title||"").trim(),text=String(req.body?.text||"").trim(),image=String(req.body?.image||"").trim();if(title.length>120||text.length>8000)return res.status(400).json({success:false,message:"Title or event text is too long"});if(image&&(!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(image)||image.length>1400000))return res.status(400).json({success:false,message:"Image must be PNG, JPG, WEBP or GIF and no larger than 1 MB"});const setting=await PlatformSetting.findOneAndUpdate({key:"events_content"},{$set:{value:{title,text,image},updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({success:true,event:setting.value,message:"Events content saved"})}catch(e){console.error("Save Events content:",e.message);res.status(500).json({success:false,message:"Failed to save Events content"})}});
+app.put("/api/internal/events",async(req,res)=>{try{const key=String(req.headers["x-deposit-settings-key"]||"");if(!process.env.DEPOSIT_SETTINGS_KEY||key!==process.env.DEPOSIT_SETTINGS_KEY)return res.status(401).json({success:false,message:"Unauthorized"});const title=String(req.body?.title||"").trim(),text=String(req.body?.text||"").trim(),image=String(req.body?.image||"").trim();if(title.length>120||text.length>8000)return res.status(400).json({success:false,message:"Title or event text is too long"});if(image&&(!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(image)||image.length>14000000))return res.status(400).json({success:false,message:"Image must be PNG, JPG, WEBP or GIF and no larger than 10 MB"});const setting=await PlatformSetting.findOneAndUpdate({key:"events_content"},{$set:{value:{title,text,image},updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({success:true,event:setting.value,message:"Events content saved"})}catch(e){console.error("Save Events content:",e.message);res.status(500).json({success:false,message:"Failed to save Events content"})}});
 app.get("/api/public/deposit-addresses",async(req,res)=>{
   try{
     const setting=await PlatformSetting.findOne({key:"deposit_addresses"}).lean();
