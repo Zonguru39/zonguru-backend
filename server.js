@@ -390,18 +390,6 @@ app.post("/api/auth/register",async(req,res)=>{
         read:false,createdAt:registrationAt
       });
     }catch(notificationError){console.error("registration security notification failed",notificationError.message);}
-    // Broadcast a privacy-safe new-member alert to existing platform accounts only.
-    // Registration IP/device details are never shared with other users.
-    try{
-      const recipientIds=await User.distinct("_id",{_id:{$ne:user._id},role:"user"});
-      if(recipientIds.length){
-        await Notification.insertMany(recipientIds.map(userId=>({
-          userId,type:"new_user_registered",title:"New member joined",
-          text:user.username+" has joined Zonguru.",
-          metadata:{username:user.username},read:false,createdAt:registrationAt
-        })),{ordered:false});
-      }
-    }catch(notificationError){console.error("new registration broadcast failed",notificationError.message);}
     res.json({success:true,message:"Registration successful",token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("register",e);
@@ -1273,8 +1261,10 @@ app.post("/api/me/bonuses/:id/claim",auth,async(req,res)=>{
 
 app.get("/api/me/notifications",auth,async(req,res)=>{
   try{
-    const rows=await Notification.find({userId:req.auth.id}).sort({createdAt:-1}).limit(100).lean();
-    const unreadCount=await Notification.countDocuments({userId:req.auth.id,read:false});
+    // Never expose legacy registration-broadcast alerts to any account.
+    const privateFilter={userId:req.auth.id,type:{$ne:"new_user_registered"}};
+    const rows=await Notification.find(privateFilter).sort({createdAt:-1}).limit(100).lean();
+    const unreadCount=await Notification.countDocuments({...privateFilter,read:false});
     res.set("Cache-Control","no-store");
     res.json({success:true,notifications:rows,unreadCount});
   }catch(e){console.error("load notifications",e);res.status(500).json({success:false,message:"Unable to load notifications"});}
