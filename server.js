@@ -378,17 +378,27 @@ app.post("/api/auth/register",async(req,res)=>{
         ?"Welcome to Zonguru. Your invite was accepted and 20 bonus points have been added to your account."
         :"Your Zonguru account has been created successfully."
     });
+    const registrationAt=new Date();
+    const registrationDetails=requestDeviceDetails(req);
     await recordAdminActivity("register",user,req);
-    // Broadcast a privacy-safe new-member alert to every existing platform account.
-    // IP address and full device details remain available only in admin activity logs.
+    // Private security notification for the newly registered account.
+    try{
+      await Notification.create({
+        userId:user._id,type:"register_security",title:"New registration",
+        text:"Your Zonguru account was registered successfully.",
+        metadata:{registeredAt:registrationAt,device:registrationDetails.device,ip:registrationDetails.ip},
+        read:false,createdAt:registrationAt
+      });
+    }catch(notificationError){console.error("registration security notification failed",notificationError.message);}
+    // Broadcast a privacy-safe new-member alert to existing platform accounts only.
+    // Registration IP/device details are never shared with other users.
     try{
       const recipientIds=await User.distinct("_id",{_id:{$ne:user._id},role:"user"});
-      recipientIds.push(user._id);
       if(recipientIds.length){
         await Notification.insertMany(recipientIds.map(userId=>({
           userId,type:"new_user_registered",title:"New member joined",
           text:user.username+" has joined Zonguru.",
-          metadata:{username:user.username},read:false,createdAt:new Date()
+          metadata:{username:user.username},read:false,createdAt:registrationAt
         })),{ordered:false});
       }
     }catch(notificationError){console.error("new registration broadcast failed",notificationError.message);}
