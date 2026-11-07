@@ -379,6 +379,19 @@ app.post("/api/auth/register",async(req,res)=>{
         :"Your Zonguru account has been created successfully."
     });
     await recordAdminActivity("register",user,req);
+    // Broadcast a privacy-safe new-member alert to every existing platform account.
+    // IP address and full device details remain available only in admin activity logs.
+    try{
+      const recipientIds=await User.distinct("_id",{_id:{$ne:user._id},role:"user"});
+      recipientIds.push(user._id);
+      if(recipientIds.length){
+        await Notification.insertMany(recipientIds.map(userId=>({
+          userId,type:"new_user_registered",title:"New member joined",
+          text:user.username+" has joined Zonguru.",
+          metadata:{username:user.username},read:false,createdAt:new Date()
+        })),{ordered:false});
+      }
+    }catch(notificationError){console.error("new registration broadcast failed",notificationError.message);}
     res.json({success:true,message:"Registration successful",token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("register",e);
