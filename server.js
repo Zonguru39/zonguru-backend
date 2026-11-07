@@ -150,6 +150,27 @@ const NotificationSchema=new mongoose.Schema({
   createdAt:{type:Date,default:Date.now,index:true}
 },{collection:"notifications"});
 const Notification=mongoose.model("Notification",NotificationSchema);
+const AdminActivitySchema=new mongoose.Schema({
+  eventType:{type:String,enum:["register","login"],required:true,index:true},
+  userId:{type:mongoose.Schema.Types.ObjectId,default:null,index:true},
+  username:{type:String,default:""},email:{type:String,default:""},phone:{type:String,default:""},
+  ip:{type:String,default:"unknown"},device:{type:String,default:"Unknown device"},
+  ownerAdminId:{type:String,default:null,index:true},createdAt:{type:Date,default:Date.now,index:true}
+},{collection:"admin_activity"});
+const AdminActivity=mongoose.model("AdminActivity",AdminActivitySchema);
+function requestDeviceDetails(req){
+  const forwarded=String(req.headers["x-forwarded-for"]||"").split(",")[0].trim();
+  const rawIp=forwarded||String(req.ip||req.socket?.remoteAddress||"unknown");
+  return {ip:rawIp.replace(/^::ffff:/,"").slice(0,64),device:String(req.headers["user-agent"]||"Unknown device").slice(0,300)};
+}
+async function recordAdminActivity(eventType,user,req){
+  try{
+    const details=requestDeviceDetails(req);
+    await AdminActivity.create({eventType,userId:user?._id||null,username:String(user?.username||"").slice(0,80),
+      email:String(user?.email||"").slice(0,160),phone:String(user?.phone||"").slice(0,40),
+      ip:details.ip,device:details.device,ownerAdminId:user?.ownerAdminId||null,createdAt:new Date()});
+  }catch(e){console.error("admin activity record failed",eventType,e.message);}
+}
 const MessageSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,subject:String,text:String,
   image:{type:String,default:""},
@@ -357,6 +378,7 @@ app.post("/api/auth/register",async(req,res)=>{
         ?"Welcome to Zonguru. Your invite was accepted and 20 bonus points have been added to your account."
         :"Your Zonguru account has been created successfully."
     });
+    await recordAdminActivity("register",user,req);
     res.json({success:true,message:"Registration successful",token:signUser(user),user:publicUser(user)});
   }catch(e){
     console.error("register",e);
@@ -395,10 +417,10 @@ app.post("/api/auth/login",async(req,res)=>{
     }
 
     const loginAt=new Date();
-    const forwarded=String(req.headers["x-forwarded-for"]||"").split(",")[0].trim();
-    const rawIp=forwarded||String(req.ip||req.socket?.remoteAddress||"unknown");
-    const safeIp=rawIp.replace(/^::ffff:/,"").slice(0,64);
-    const ua=String(req.headers["user-agent"]||"Unknown device").slice(0,300);
+    const requestDetails=requestDeviceDetails(req);
+    const safeIp=requestDetails.ip;
+    const ua=requestDetails.device;
+    await recordAdminActivity("login",user,req);
     try{await Notification.create({userId:user._id,type:"login_security",title:"New login",text:"A login to your account was recorded.",metadata:{loginAt,device:ua,ip:safeIp}});}
     catch(logError){console.error("login security notification failed",logError.message);}
     res.json({success:true,token:signUser(user),user:publicUser(user)});
@@ -1402,6 +1424,15 @@ app.delete("/api/admin/announcements/:id",auth,admin,async(req,res)=>{
     if(!row)return res.status(404).json({success:false,message:"Announcement not found"});
     res.json({success:true,deleted:true});
   }catch(e){res.status(500).json({success:false,message:"Unable to delete announcement"});}
+});
+app.get("/api/admin/activity",auth,admin,async(req,res)=>{
+  try{
+    const filter={};
+    if(req.auth?.adminType!=="superadmin")filter.ownerAdminId=String(req.auth.id);
+    const rows=await AdminActivity.find(filter).sort({createdAt:-1}).limit(200).lean();
+    res.set("Cache-Control","no-store");
+    res.json({success:true,activities:rows});
+  }catch(e){console.error("admin activity",e);res.status(500).json({success:false,message:"Unable to load registration and login activity"});}
 });
 app.get("/api/admin/users",auth,admin,async(req,res)=>{
   const users=await User.find().sort({createdAt:-1}).lean();
