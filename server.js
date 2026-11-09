@@ -210,6 +210,7 @@ const OrderSchema=new mongoose.Schema({
   userId:mongoose.Schema.Types.ObjectId,
   productId:mongoose.Schema.Types.ObjectId,
   productName:String,amount:Number,profitRate:Number,commission:Number,
+  commissionUSDT:{type:Number,default:null},currency:{type:String,default:"USDT"},
   baseCommission:{type:Number,default:0},
   commissionMultiplier:{type:Number,default:1},
   availableBalance:{type:Number,default:0},
@@ -948,7 +949,7 @@ app.post("/api/tasks/:productId/complete",auth,async(req,res)=>{
     const baseCommission=amount*(rate/100),commissionMultiplier=specialTriggered?Math.max(1,Math.min(20,Number(user.insufficientBalanceCommissionMultiplier||1))):1,commission=baseCommission*commissionMultiplier;
     const commissionUSDT=Number(convertCurrencyAmount(commission,accountCurrency,"USDT").toFixed(2));
     task.completedIds.push(req.params.productId);if(task.completedIds.length>0&&task.completedIds.length%5===0){user.spinTickets=Number(user.spinTickets||0)+1;}task.productIds=[...(task.productIds||[]),req.params.productId].slice(-20);task.recentProductIds=[...(task.recentProductIds||[]),req.params.productId].slice(-15);task.currentProductId=null;task.currentProductAmount=0;task.currentTaskNumber=0;task.updatedAt=new Date();await task.save();
-    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,baseCommission,commissionMultiplier,availableBalance:Number(convertCurrencyAmount(availableBalanceUSDT,"USDT",accountCurrency).toFixed(2)),shortfall:0,taskNumber,reviewText,status:"completed"});
+    await Order.create({userId:req.auth.id,productId:req.params.productId,productName:product.name||"Product",amount,profitRate:rate,commission,commissionUSDT,currency:accountCurrency,baseCommission,commissionMultiplier,availableBalance:Number(convertCurrencyAmount(availableBalanceUSDT,"USDT",accountCurrency).toFixed(2)),shortfall:0,taskNumber,reviewText,status:"completed"});
     // USDT remains the sole canonical stored balance. Convert the displayed
     // currency commission back to USDT before crediting the account.
     const wallet=walletMap(user);
@@ -1451,6 +1452,51 @@ app.get("/api/admin/users",auth,admin,async(req,res)=>{
   const users=await User.find().sort({createdAt:-1}).lean();
   const safeUsers=users.map(({passwordHash,withdrawalPasswordHash,...user})=>user);
   res.json({success:true,users:safeUsers});
+});
+app.get("/api/admin/dashboard/income",auth,admin,async(req,res)=>{
+  try{
+    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Yangon",year:"numeric",month:"2-digit"}).formatToParts(new Date());
+    const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+    const y=Number(p.year),m=Number(p.month),offsetMs=390*60*1000;
+    const previousMonthStart=new Date(Date.UTC(y,m-2,1)-offsetMs);
+    const currentMonthStart=new Date(Date.UTC(y,m-1,1)-offsetMs);
+    const nextMonthStart=new Date(Date.UTC(y,m,1)-offsetMs);
+    const orders=await Order.find({
+      status:"completed",
+      createdAt:{$gte:previousMonthStart,$lt:nextMonthStart}
+    }).select("userId commission commissionUSDT currency createdAt").lean();
+    const userIds=[...new Set(orders.map(x=>String(x.userId||"")).filter(Boolean))];
+    const users=userIds.length?await User.find({_id:{$in:userIds},role:"user"}).select("_id currency").lean():[];
+    const userMap=new Map(users.map(u=>[String(u._id),u]));
+    const currentByUser=new Map(),previousByUser=new Map();
+    let estimatedLegacyOrders=0;
+    for(const order of orders){
+      const userId=String(order.userId||"");
+      if(!userMap.has(userId))continue;
+      let amountUSDT=Number(order.commissionUSDT);
+      if(order.commissionUSDT===null||order.commissionUSDT===undefined||!Number.isFinite(amountUSDT)){
+        const currency=order.currency||userMap.get(userId)?.currency||"USDT";
+        amountUSDT=convertCurrencyAmount(Number(order.commission||0),currency,"USDT");
+        estimatedLegacyOrders++;
+      }
+      if(!Number.isFinite(amountUSDT)||amountUSDT<0)continue;
+      const target=new Date(order.createdAt||0)>=currentMonthStart?currentByUser:previousByUser;
+      target.set(userId,Number(((target.get(userId)||0)+amountUSDT).toFixed(2)));
+    }
+    const rows=map=>[...map.entries()].map(([userId,amountUSDT])=>({userId,amountUSDT}));
+    res.set("Cache-Control","no-store");
+    res.json({
+      success:true,
+      currentMonthByUser:rows(currentByUser),
+      previousMonthByUser:rows(previousByUser),
+      currentMonthStart:currentMonthStart.toISOString(),
+      previousMonthStart:previousMonthStart.toISOString(),
+      estimatedLegacyOrders
+    });
+  }catch(e){
+    console.error("admin dashboard income summary",e);
+    res.status(500).json({success:false,message:"Unable to load income trend summary"});
+  }
 });
 app.post("/api/admin/users/:id/vip",auth,admin,async(req,res)=>{
   const level=Number(req.body?.vipLevel);
