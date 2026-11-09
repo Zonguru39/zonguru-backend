@@ -1461,14 +1461,17 @@ app.get("/api/admin/dashboard/income",auth,admin,async(req,res)=>{
     const previousMonthStart=new Date(Date.UTC(y,m-2,1)-offsetMs);
     const currentMonthStart=new Date(Date.UTC(y,m-1,1)-offsetMs);
     const nextMonthStart=new Date(Date.UTC(y,m,1)-offsetMs);
+    const dayStart=yangonProfitWindows().dayStart;
+    const lastSevenDaysStart=new Date(dayStart.getTime()-6*86400000);
+
     const orders=await Order.find({
       status:"completed",
       createdAt:{$gte:previousMonthStart,$lt:nextMonthStart}
     }).select("userId commission commissionUSDT currency createdAt").lean();
-    const userIds=[...new Set(orders.map(x=>String(x.userId||"")).filter(Boolean))];
-    const users=userIds.length?await User.find({_id:{$in:userIds},role:"user"}).select("_id currency").lean():[];
-    const userMap=new Map(users.map(u=>[String(u._id),u]));
-    const currentByUser=new Map(),previousByUser=new Map();
+    const orderUserIds=[...new Set(orders.map(x=>String(x.userId||"")).filter(Boolean))];
+    const orderUsers=orderUserIds.length?await User.find({_id:{$in:orderUserIds},role:"user"}).select("_id currency").lean():[];
+    const userMap=new Map(orderUsers.map(u=>[String(u._id),u]));
+    const currentIncomeByUser=new Map(),previousIncomeByUser=new Map();
     let estimatedLegacyOrders=0;
     for(const order of orders){
       const userId=String(order.userId||"");
@@ -1480,22 +1483,61 @@ app.get("/api/admin/dashboard/income",auth,admin,async(req,res)=>{
         estimatedLegacyOrders++;
       }
       if(!Number.isFinite(amountUSDT)||amountUSDT<0)continue;
-      const target=new Date(order.createdAt||0)>=currentMonthStart?currentByUser:previousByUser;
+      const target=new Date(order.createdAt||0)>=currentMonthStart?currentIncomeByUser:previousIncomeByUser;
       target.set(userId,Number(((target.get(userId)||0)+amountUSDT).toFixed(2)));
     }
-    const rows=map=>[...map.entries()].map(([userId,amountUSDT])=>({userId,amountUSDT}));
+
+    const rateBranches=Object.entries(CURRENCY_RATES).map(([currency,rate])=>({
+      case:{$eq:[{$toUpper:{$ifNull:["$currency","USDT"]}},currency]},
+      then:rate
+    }));
+    const rateExpression={$switch:{branches:rateBranches,default:1}};
+    const normalizedType={$toLower:{$ifNull:["$type",""]}};
+    const fallbackAmount={$divide:[{$ifNull:["$amount",0]},rateExpression]};
+    const convertedAmount={$ifNull:["$convertedAmountUSDT",null]};
+    const amountUSDT={$cond:[
+      {$in:[normalizedType,["withdrawal","withdraw"]]},
+      {$cond:[
+        {$gt:[{$ifNull:["$debitedAmount",0]},0]},
+        "$debitedAmount",
+        {$cond:[{$ne:[convertedAmount,null]},convertedAmount,fallbackAmount]}
+      ]},
+      {$cond:[{$ne:[convertedAmount,null]},convertedAmount,fallbackAmount]}
+    ]};
+    const transactionFacets=await Transaction.aggregate([
+      {$match:{status:"approved",type:{$in:["deposit","withdrawal","withdraw"]}}},
+      {$addFields:{normalizedType,amountUSDT}},
+      {$facet:{
+        allTime:[
+          {$group:{_id:{userId:"$userId",type:"$normalizedType"},amountUSDT:{$sum:"$amountUSDT"}}}
+        ],
+        monthly:[
+          {$match:{createdAt:{$gte:previousMonthStart,$lt:nextMonthStart}}},
+          {$group:{_id:{userId:"$userId",type:"$normalizedType",period:{$cond:[{$gte:["$createdAt",currentMonthStart]},"current","previous"]}},amountUSDT:{$sum:"$amountUSDT"}}}
+        ],
+        dailyDeposits:[
+          {$match:{normalizedType:"deposit",createdAt:{$gte:lastSevenDaysStart,$lt:nextMonthStart}}},
+          {$group:{_id:{userId:"$userId",day:{$dateToString:{format:"%Y-%m-%d",date:"$createdAt",timezone:"Asia/Yangon"}}},amountUSDT:{$sum:"$amountUSDT"}}}
+        ]
+      }}
+    ]);
+    const facets=transactionFacets[0]||{allTime:[],monthly:[],dailyDeposits:[]};
+    const rows=(map)=>[...map.entries()].map(([userId,amountUSDT])=>({userId,amountUSDT}));
     res.set("Cache-Control","no-store");
     res.json({
       success:true,
-      currentMonthByUser:rows(currentByUser),
-      previousMonthByUser:rows(previousByUser),
+      currentMonthByUser:rows(currentIncomeByUser),
+      previousMonthByUser:rows(previousIncomeByUser),
+      allTimeTransactionsByUser:(facets.allTime||[]).map(x=>({userId:String(x._id.userId||""),type:x._id.type,amountUSDT:Number(x.amountUSDT||0)})),
+      monthlyTransactionsByUser:(facets.monthly||[]).map(x=>({userId:String(x._id.userId||""),type:x._id.type,period:x._id.period,amountUSDT:Number(x.amountUSDT||0)})),
+      dailyDepositsByUser:(facets.dailyDeposits||[]).map(x=>({userId:String(x._id.userId||""),day:x._id.day,amountUSDT:Number(x.amountUSDT||0)})),
       currentMonthStart:currentMonthStart.toISOString(),
       previousMonthStart:previousMonthStart.toISOString(),
       estimatedLegacyOrders
     });
   }catch(e){
-    console.error("admin dashboard income summary",e);
-    res.status(500).json({success:false,message:"Unable to load income trend summary"});
+    console.error("admin dashboard financial summary",e);
+    res.status(500).json({success:false,message:"Unable to load dashboard financial summary"});
   }
 });
 app.post("/api/admin/users/:id/vip",auth,admin,async(req,res)=>{
