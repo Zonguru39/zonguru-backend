@@ -1326,49 +1326,26 @@ app.get("/api/public/live-activities",async(req,res)=>{
   const uniqueRows=[];
   for(const candidates of byUser.values())uniqueRows.push(shuffle(candidates)[0]);
   const promoRows=manualItems.map(item=>({kind:"promotion",phone:maskPhone(item.phone),message:item.message,displayAmount:item.amountText,sourceLabel:"PROMO",createdAt:item.createdAt}));
-  // Clearly labelled fictional demo entries; international masked numbers only.
-  // These are display samples, not transactions or user records.
-  const demoRows=[];
-  const demoCallingCodes=["1","44","65","60","66","91","81","61","49","33","39","34","55","52","971","966","27","63","62","84","82","90","20","234","254","64","46","31","41","7"];
-  const randomDigits=(count)=>Array.from({length:count},()=>Math.floor(Math.random()*10)).join("");
-  const randomInternationalPhone=()=>{
-   const code=demoCallingCodes[Math.floor(Math.random()*demoCallingCodes.length)];
-   const local=randomDigits(10);
-   return "+"+code+" "+local.slice(0,3)+"***"+local.slice(6,10);
-  };
-  for(let n=1;n<=75;n++){
-   const isWithdrawal=n%2===1;
-   const amount=isWithdrawal?(n===1?56726.85:Number((150+Math.random()*18000).toFixed(2))):Number((5+Math.random()*2500).toFixed(2));
-   demoRows.push({kind:"demo",demoType:isWithdrawal?"withdrawal":"spin",phone:randomInternationalPhone(),
-    message:isWithdrawal?"DEMO · Withdrawal completed":"DEMO · Lucky Spin prize",
-    displayAmount:amount.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})+" USDT",
-    sourceLabel:"DEMO",createdAt:null});
-  }
-  // A final international demo sample, with no Myanmar +959 number.
-  const finalDemoRow={kind:"demo",demoType:"withdrawal",phone:randomInternationalPhone(),
-   message:"DEMO · Withdrawal completed",displayAmount:"1,250.00 USDT",sourceLabel:"DEMO",createdAt:null};
+  // Only genuine user activity and manually configured promotions are shown.
+  // Fictional sample rows are intentionally excluded from the public activity feed.
   const rows=shuffle(uniqueRows);
   const queues={
    withdrawal:shuffle(rows.filter(x=>x.kind==="withdrawal")),
    spin:shuffle(rows.filter(x=>x.kind==="spin")),
-   promotion:shuffle(promoRows),
-   demoWithdrawal:shuffle(demoRows.filter(x=>x.demoType==="withdrawal")),
-   demoSpin:shuffle(demoRows.filter(x=>x.demoType==="spin"))
+   promotion:shuffle(promoRows)
   };
   const mixed=[];
   while(Object.values(queues).some(queue=>queue.length)){
    const available=Object.keys(queues).filter(k=>queues[k].length);
    let choices=available;
    if(mixed.length>=1){
-    const previousType=mixed[mixed.length-1].kind==="demo"?mixed[mixed.length-1].demoType:mixed[mixed.length-1].kind;
-    const alternatives=available.filter(k=>(k==="demoWithdrawal"?"withdrawal":k==="demoSpin"?"spin":k)!==previousType);
+    const previousType=mixed[mixed.length-1].kind;
+    const alternatives=available.filter(k=>k!==previousType);
     if(alternatives.length)choices=alternatives;
    }
    const kind=choices[Math.floor(Math.random()*choices.length)];
    mixed.push(queues[kind].pop());
   }
-  // Always finish with one masked international DEMO number.
-  mixed.push(finalDemoRow);
   res.set("Cache-Control","no-store");
   res.json({success:true,enabled:true,speedSeconds,activities:mixed,uniqueAccountCount:uniqueRows.length});
  }catch(e){console.error("Public live activities",e);res.status(500).json({success:false,message:"Unable to load live activities"});}
