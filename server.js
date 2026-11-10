@@ -1282,6 +1282,44 @@ app.post("/api/me/notifications/read-all",auth,async(req,res)=>{
   catch(e){res.status(500).json({success:false,message:"Unable to mark notifications as read"});}
 });
 
+app.get("/api/public/live-activities",async(req,res)=>{
+  try{
+    const [withdrawals,spinUsers]=await Promise.all([
+      Transaction.find({type:"withdrawal",status:"approved"}).sort({reviewedAt:-1,createdAt:-1}).limit(40).select("userId amount currency convertedAmountUSDT reviewedAt createdAt").lean(),
+      User.find({role:"user","spinHistory.claimStatus":"claimed"}).select("phone spinHistory").limit(80).lean()
+    ]);
+    const userIds=[...new Set(withdrawals.map(x=>String(x.userId||"")).filter(Boolean))];
+    const users=userIds.length?await User.find({_id:{$in:userIds}}).select("_id phone").lean():[];
+    const phoneById=new Map(users.map(u=>[String(u._id),String(u.phone||"")]));
+    const maskPhone=(value)=>{
+      const raw=String(value||"").trim(),digits=raw.replace(/\\D/g,"");
+      if(digits.length<6)return "******";
+      const prefix=digits.slice(0,Math.min(3,digits.length-3));
+      return (raw.startsWith("+")?"+":"")+prefix+" ****** "+digits.slice(-3);
+    };
+    const rows=[];
+    for(const t of withdrawals){
+      const amount=Number(t.convertedAmountUSDT!=null?t.convertedAmountUSDT:t.amount||0);
+      if(!Number.isFinite(amount)||amount<=0)continue;
+      rows.push({kind:"withdrawal",phone:maskPhone(phoneById.get(String(t.userId))),message:"Congratulations! Withdrawal completed",amountUSDT:Number(amount.toFixed(2)),displayAmount:Number(amount.toFixed(2)).toLocaleString("en-US")+" USDT",createdAt:t.reviewedAt||t.createdAt});
+    }
+    for(const u of spinUsers){
+      for(const spin of (u.spinHistory||[])){
+        if(spin.claimStatus!=="claimed"||spin.prizeId==="no_reward")continue;
+        const credited=Number(spin.creditedUSDT||0);
+        const label=credited>0?credited.toLocaleString("en-US",{maximumFractionDigits:2})+" USDT":String(spin.label||"Lucky Spin prize");
+        rows.push({kind:"spin",phone:maskPhone(u.phone),message:"Congratulations! You won a Lucky Spin prize",amountUSDT:credited>0?credited:null,displayAmount:label,createdAt:spin.claimedAt||spin.createdAt});
+      }
+    }
+    rows.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+    res.set("Cache-Control","public, max-age=30, s-maxage=30");
+    res.json({success:true,activities:rows.slice(0,60)});
+  }catch(e){
+    console.error("Public live activities",e);
+    res.status(500).json({success:false,message:"Unable to load live activities"});
+  }
+});
+
 app.get("/api/transactions",auth,async(req,res)=>{
   res.json({success:true,transactions:await Transaction.find({userId:req.auth.id}).sort({createdAt:-1})});
 });
