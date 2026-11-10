@@ -196,7 +196,7 @@ const AnnouncementSchema=new mongoose.Schema({
 const Announcement=mongoose.model("Announcement",AnnouncementSchema);
 const LiveActivityItemSchema=new mongoose.Schema({phone:{type:String,required:true,trim:true,maxlength:40},message:{type:String,required:true,trim:true,maxlength:180},amountText:{type:String,required:true,trim:true,maxlength:50},active:{type:Boolean,default:true,index:true},createdAt:{type:Date,default:Date.now}},{collection:"live_activity_items"});
 const LiveActivityItem=mongoose.model("LiveActivityItem",LiveActivityItemSchema);
-const LiveActivitySettingsSchema=new mongoose.Schema({key:{type:String,default:"global",unique:true},enabled:{type:Boolean,default:true},speedSeconds:{type:Number,default:90,min:30,max:300},updatedAt:{type:Date,default:Date.now}},{collection:"live_activity_settings"});
+const LiveActivitySettingsSchema=new mongoose.Schema({key:{type:String,default:"global",unique:true},enabled:{type:Boolean,default:true},speedSeconds:{type:Number,default:30,min:15,max:45},updatedAt:{type:Date,default:Date.now}},{collection:"live_activity_settings"});
 const LiveActivitySettings=mongoose.model("LiveActivitySettings",LiveActivitySettingsSchema);
 
 const TaskProgressSchema=new mongoose.Schema({
@@ -1290,12 +1290,12 @@ app.post("/api/me/notifications/read-all",auth,async(req,res)=>{
 app.get("/api/public/live-activities",async(req,res)=>{
  try{
   const [withdrawals,spinUsers,manualItems,settings]=await Promise.all([
-   Transaction.find({type:"withdrawal",status:"approved"}).sort({reviewedAt:-1,createdAt:-1}).limit(80).select("userId amount currency convertedAmountUSDT reviewedAt createdAt").lean(),
-   User.find({role:"user","spinHistory.claimStatus":"claimed"}).select("phone spinHistory").limit(150).lean(),
+   Transaction.find({type:"withdrawal",status:"approved"}).sort({reviewedAt:-1,createdAt:-1}).limit(200).select("userId amount currency convertedAmountUSDT reviewedAt createdAt").lean(),
+   User.find({role:"user","spinHistory.claimStatus":"claimed"}).select("phone spinHistory").limit(300).lean(),
    LiveActivityItem.find({active:true}).sort({createdAt:-1}).limit(100).lean(),
    LiveActivitySettings.findOne({key:"global"}).lean()
   ]);
-  const enabled=settings?.enabled!==false,speedSeconds=Math.max(30,Math.min(300,Number(settings?.speedSeconds||90)));
+  const enabled=settings?.enabled!==false,speedSeconds=Math.max(15,Math.min(45,Number(settings?.speedSeconds||30)));
   if(!enabled){res.set("Cache-Control","no-store");return res.json({success:true,enabled:false,speedSeconds,activities:[]});}
   const userIds=[...new Set(withdrawals.map(x=>String(x.userId||"")).filter(Boolean))];
   const users=userIds.length?await User.find({_id:{$in:userIds}}).select("_id phone").lean():[];
@@ -1318,7 +1318,7 @@ app.get("/api/public/live-activities",async(req,res)=>{
   }
   const promoRows=manualItems.map(item=>({kind:"promotion",phone:maskPhone(item.phone),message:item.message,displayAmount:item.amountText,sourceLabel:"PROMO",createdAt:item.createdAt}));
   const shuffle=(items)=>{const copy=items.slice();for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];}return copy;};
-  const queues={withdrawal:shuffle(withdrawalsRows).slice(0,40),spin:shuffle(spinRows).slice(0,40),promotion:shuffle(promoRows).slice(0,20)};
+  const queues={withdrawal:shuffle(withdrawalsRows).slice(0,100),spin:shuffle(spinRows).slice(0,100),promotion:shuffle(promoRows).slice(0,20)};
   const rows=[];
   while(queues.withdrawal.length||queues.spin.length||queues.promotion.length){
    const available=Object.keys(queues).filter(k=>queues[k].length);
