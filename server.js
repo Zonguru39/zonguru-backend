@@ -1292,7 +1292,7 @@ app.get("/api/public/live-activities",async(req,res)=>{
     const users=userIds.length?await User.find({_id:{$in:userIds}}).select("_id phone").lean():[];
     const phoneById=new Map(users.map(u=>[String(u._id),String(u.phone||"")]));
     const maskPhone=(value)=>{
-      const raw=String(value||"").trim(),digits=raw.replace(/\\D/g,"");
+      const raw=String(value||"").trim(),digits=raw.replace(/\D/g,"");
       if(digits.length<6)return "******";
       const prefix=digits.slice(0,Math.min(3,digits.length-3));
       return (raw.startsWith("+")?"+":"")+prefix+" ****** "+digits.slice(-3);
