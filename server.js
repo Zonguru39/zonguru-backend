@@ -1290,8 +1290,8 @@ app.post("/api/me/notifications/read-all",auth,async(req,res)=>{
 app.get("/api/public/live-activities",async(req,res)=>{
  try{
   const [withdrawals,spinUsers,manualItems,settings]=await Promise.all([
-   Transaction.find({type:"withdrawal",status:"approved"}).sort({reviewedAt:-1,createdAt:-1}).limit(40).select("userId amount currency convertedAmountUSDT reviewedAt createdAt").lean(),
-   User.find({role:"user","spinHistory.claimStatus":"claimed"}).select("phone spinHistory").limit(80).lean(),
+   Transaction.find({type:"withdrawal",status:"approved"}).sort({reviewedAt:-1,createdAt:-1}).limit(80).select("userId amount currency convertedAmountUSDT reviewedAt createdAt").lean(),
+   User.find({role:"user","spinHistory.claimStatus":"claimed"}).select("phone spinHistory").limit(150).lean(),
    LiveActivityItem.find({active:true}).sort({createdAt:-1}).limit(100).lean(),
    LiveActivitySettings.findOne({key:"global"}).lean()
   ]);
@@ -1301,12 +1301,37 @@ app.get("/api/public/live-activities",async(req,res)=>{
   const users=userIds.length?await User.find({_id:{$in:userIds}}).select("_id phone").lean():[];
   const phoneById=new Map(users.map(u=>[String(u._id),String(u.phone||"")]));
   const maskPhone=(value)=>{const raw=String(value||"").trim(),digits=raw.replace(/\D/g,"");if(digits.length<6)return "******";const prefix=digits.slice(0,Math.min(3,digits.length-3));return (raw.startsWith("+")?"+":"")+prefix+" ****** "+digits.slice(-3);};
+  const withdrawalsRows=[];
+  for(const t of withdrawals){
+   const amount=Number(t.convertedAmountUSDT!=null?t.convertedAmountUSDT:t.amount||0);
+   if(!Number.isFinite(amount)||amount<=0)continue;
+   withdrawalsRows.push({kind:"withdrawal",phone:maskPhone(phoneById.get(String(t.userId))),message:"Congratulations! Withdrawal completed",amountUSDT:Number(amount.toFixed(2)),displayAmount:Number(amount.toFixed(2)).toLocaleString("en-US")+" USDT",createdAt:t.reviewedAt||t.createdAt});
+  }
+  const spinRows=[];
+  for(const u of spinUsers){
+   for(const spin of (u.spinHistory||[])){
+    if(spin.claimStatus!=="claimed"||spin.prizeId==="no_reward")continue;
+    const credited=Number(spin.creditedUSDT||0);
+    const label=credited>0?credited.toLocaleString("en-US",{maximumFractionDigits:2})+" USDT":String(spin.label||"Lucky Spin prize");
+    spinRows.push({kind:"spin",phone:maskPhone(u.phone),message:"Congratulations! You won a Lucky Spin prize",amountUSDT:credited>0?credited:null,displayAmount:label,createdAt:spin.claimedAt||spin.createdAt});
+   }
+  }
+  const promoRows=manualItems.map(item=>({kind:"promotion",phone:maskPhone(item.phone),message:item.message,displayAmount:item.amountText,sourceLabel:"PROMO",createdAt:item.createdAt}));
+  const shuffle=(items)=>{const copy=items.slice();for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];}return copy;};
+  const queues={withdrawal:shuffle(withdrawalsRows).slice(0,40),spin:shuffle(spinRows).slice(0,40),promotion:shuffle(promoRows).slice(0,20)};
   const rows=[];
-  for(const t of withdrawals){const amount=Number(t.convertedAmountUSDT!=null?t.convertedAmountUSDT:t.amount||0);if(!Number.isFinite(amount)||amount<=0)continue;rows.push({kind:"withdrawal",phone:maskPhone(phoneById.get(String(t.userId))),message:"Congratulations! Withdrawal completed",amountUSDT:Number(amount.toFixed(2)),displayAmount:Number(amount.toFixed(2)).toLocaleString("en-US")+" USDT",createdAt:t.reviewedAt||t.createdAt});}
-  for(const u of spinUsers){for(const spin of (u.spinHistory||[])){if(spin.claimStatus!=="claimed"||spin.prizeId==="no_reward")continue;const credited=Number(spin.creditedUSDT||0);const label=credited>0?credited.toLocaleString("en-US",{maximumFractionDigits:2})+" USDT":String(spin.label||"Lucky Spin prize");rows.push({kind:"spin",phone:maskPhone(u.phone),message:"Congratulations! You won a Lucky Spin prize",amountUSDT:credited>0?credited:null,displayAmount:label,createdAt:spin.claimedAt||spin.createdAt});}}
-  for(const item of manualItems)rows.push({kind:"promotion",phone:maskPhone(item.phone),message:item.message,displayAmount:item.amountText,sourceLabel:"PROMO",createdAt:item.createdAt});
-  rows.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
-  res.set("Cache-Control","no-store");res.json({success:true,enabled:true,speedSeconds,activities:rows.slice(0,100)});
+  while(queues.withdrawal.length||queues.spin.length||queues.promotion.length){
+   const available=Object.keys(queues).filter(k=>queues[k].length);
+   let choices=available;
+   if(rows.length>=2&&rows[rows.length-1].kind===rows[rows.length-2].kind){
+    const alternatives=available.filter(k=>k!==rows[rows.length-1].kind);
+    if(alternatives.length)choices=alternatives;
+   }
+   const kind=choices[Math.floor(Math.random()*choices.length)];
+   rows.push(queues[kind].pop());
+  }
+  res.set("Cache-Control","no-store");
+  res.json({success:true,enabled:true,speedSeconds,activities:rows});
  }catch(e){console.error("Public live activities",e);res.status(500).json({success:false,message:"Unable to load live activities"});}
 });
 
