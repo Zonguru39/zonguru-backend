@@ -1326,11 +1326,25 @@ app.get("/api/public/live-activities",async(req,res)=>{
   const uniqueRows=[];
   for(const candidates of byUser.values())uniqueRows.push(shuffle(candidates)[0]);
   const promoRows=manualItems.map(item=>({kind:"promotion",phone:maskPhone(item.phone),message:item.message,displayAmount:item.amountText,sourceLabel:"PROMO",createdAt:item.createdAt}));
+  // Clearly labelled fictional demo entries; these are display samples, not transactions or user records.
+  const demoRows=[];
+  for(let n=1;n<=75;n++){
+   const isWithdrawal=n%2===1;
+   const amount=isWithdrawal?(n===1?56726.85:Number((150+Math.random()*18000).toFixed(2))):Number((5+Math.random()*2500).toFixed(2));
+   const suffix=String(n).padStart(3,"0");
+   demoRows.push({kind:"demo",demoType:isWithdrawal?"withdrawal":"spin",phone:"959****"+suffix,
+    message:isWithdrawal?"DEMO · Withdrawal completed":"DEMO · Lucky Spin prize",
+    displayAmount:amount.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})+" USDT",
+    sourceLabel:"DEMO",createdAt:null});
+  }
+  // The requested sample phone is always the final ticker item.
+  demoRows.push({kind:"demo",demoType:"withdrawal",phone:"959****243",message:"DEMO · Withdrawal completed",
+   displayAmount:"1,250.00 USDT",sourceLabel:"DEMO",createdAt:null});
   const priorityPhone=(phone)=>String(phone||"").replace(/\D/g,"").startsWith("959")&&String(phone||"").replace(/\D/g,"").endsWith("243");
   const priorityRows=uniqueRows.filter(row=>priorityPhone(row.phone));
   let rows=shuffle(uniqueRows.filter(row=>!priorityPhone(row.phone)));
   const promos=shuffle(promoRows.filter(row=>!priorityPhone(row.phone)));
-  const queues={withdrawal:shuffle(rows.filter(x=>x.kind==="withdrawal")),spin:shuffle(rows.filter(x=>x.kind==="spin")),promotion:promos};
+  const queues={withdrawal:shuffle(rows.filter(x=>x.kind==="withdrawal")),spin:shuffle(rows.filter(x=>x.kind==="spin")),promotion:promos,demo:shuffle(demoRows.slice(0,-1))};
   const mixed=[];
   while(queues.withdrawal.length||queues.spin.length||queues.promotion.length){
    const available=Object.keys(queues).filter(k=>queues[k].length);
