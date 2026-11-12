@@ -9,7 +9,7 @@ const app = express();
 app.use(cors({
   origin: true,
   methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"]
+  allowedHeaders: ["Content-Type","Authorization","X-Vip-Channel-Token"]
 }));
 app.options("*", cors());
 app.use(express.json({limit:"14mb"}));
