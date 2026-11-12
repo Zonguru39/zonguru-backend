@@ -611,8 +611,8 @@ app.post("/api/me/vip-channel/pin/setup",auth,async(req,res)=>{
     if(!user)return res.status(404).json({success:false,message:"User not found"});
     if(user.vipChannelPinHash)return res.status(409).json({success:false,message:"A VIP Channel lock is already set. Enter your PIN to unlock."});
     user.vipChannelPinHash=hashPassword(pin);
+    user.vipChannelPinFailedAttempts=0;user.vipChannelPinBlockedUntil=null;
     await user.save();
-    user.vipChannelPinFailedAttempts=0;user.vipChannelPinBlockedUntil=null;await user.save();
     res.set("Cache-Control","no-store");
     res.json({success:true,channelToken:issueVipChannelToken(user),expiresIn:1800,message:"VIP Channel lock saved"});
   }catch(e){console.error("VIP Channel PIN setup",e);res.status(500).json({success:false,message:"Unable to save VIP Channel lock"});}
