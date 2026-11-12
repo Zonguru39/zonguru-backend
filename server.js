@@ -9,7 +9,7 @@ const app = express();
 app.use(cors({
   origin: true,
   methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"]
+  allowedHeaders: ["Content-Type","Authorization","X-Vip-Channel-Token"]
 }));
 app.options("*", cors());
 app.use(express.json({limit:"14mb"}));
@@ -60,6 +60,9 @@ const UserSchema=new mongoose.Schema({
   emailVerified:{type:Boolean,default:true},
   passwordHash:{type:String,required:true},
   withdrawalPasswordHash:{type:String,default:""},
+  vipChannelPinHash:{type:String,default:"",select:false},
+  vipChannelPinFailedAttempts:{type:Number,default:0,min:0,max:5},
+  vipChannelPinBlockedUntil:{type:Date,default:null},
   bankAccounts:[{bankName:{type:String,required:true},accountName:{type:String,required:true},accountNumber:{type:String,required:true},additionalDetails:{type:String,default:""},createdAt:{type:Date,default:Date.now}}],
   role:{type:String,default:"user"},
   balance:{type:Number,default:0},
@@ -233,6 +236,21 @@ const PlatformSettingSchema=new mongoose.Schema({
 },{collection:"platform_settings"});
 const PlatformSetting=mongoose.model("PlatformSetting",PlatformSettingSchema);
 
+const VipChannelMediaSchema=new mongoose.Schema({
+  type:{type:String,enum:["banner","entry","gallery"],required:true,index:true},
+  title:{type:String,default:"",maxlength:120},
+  caption:{type:String,default:"",maxlength:240},
+  image:{type:String,required:true},
+  sortOrder:{type:Number,default:0,min:0,max:9999},
+  active:{type:Boolean,default:true,index:true},
+  createdAt:{type:Date,default:Date.now},
+  updatedAt:{type:Date,default:Date.now}
+},{collection:"vip_channel_media"});
+const VipChannelMedia=mongoose.model("VipChannelMedia",VipChannelMediaSchema);
+function cleanVipChannelMedia(item){
+  return {id:String(item._id),type:item.type,title:item.title||"",caption:item.caption||"",image:item.image||"",sortOrder:Number(item.sortOrder||0),active:item.active!==false,createdAt:item.createdAt||null,updatedAt:item.updatedAt||null};
+}
+
 
 
 app.disable("x-powered-by");
@@ -259,6 +277,7 @@ app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"
 
 app.get("/api/public/events",async(req,res)=>{try{const setting=await PlatformSetting.findOne({key:"events_content"}).lean();res.set("Cache-Control","no-store");const v=setting?.value||{};res.json({success:true,event:{title:String(v.title||"Salary List"),text:String(v.text||""),image:String(v.image||""),updatedAt:setting?.updatedAt||null}})}catch(e){res.status(500).json({success:false,message:"Failed to load Events content"})}});
 app.put("/api/internal/events",async(req,res)=>{try{const key=String(req.headers["x-deposit-settings-key"]||"");if(!process.env.DEPOSIT_SETTINGS_KEY||key!==process.env.DEPOSIT_SETTINGS_KEY)return res.status(401).json({success:false,message:"Unauthorized"});const title=String(req.body?.title||"").trim(),text=String(req.body?.text||"").trim(),image=String(req.body?.image||"").trim();if(title.length>120||text.length>8000)return res.status(400).json({success:false,message:"Title or event text is too long"});if(image&&(!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(image)||image.length>14000000))return res.status(400).json({success:false,message:"Image must be PNG, JPG, WEBP or GIF and no larger than 10 MB"});const setting=await PlatformSetting.findOneAndUpdate({key:"events_content"},{$set:{value:{title,text,image},updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({success:true,event:setting.value,message:"Events content saved"})}catch(e){console.error("Save Events content:",e.message);res.status(500).json({success:false,message:"Failed to save Events content"})}});
+
 app.get("/api/public/deposit-addresses",async(req,res)=>{
   try{
     const setting=await PlatformSetting.findOne({key:"deposit_addresses"}).lean();
@@ -557,6 +576,87 @@ async function userProfitPeriods(userId,now=new Date()){
   for(const row of rows){const t=new Date(row.createdAt||0).getTime(),profit=Number(row.commission||0);if(!Number.isFinite(profit))continue;if(t>=w.monthStart.getTime())month+=profit;if(t>=w.weekStart.getTime())week+=profit;if(t>=w.dayStart.getTime())today+=profit;}
   return {todayProfit:Number(today.toFixed(2)),weeklyProfit:Number(week.toFixed(2)),monthlyProfit:Number(month.toFixed(2))};
 }
+
+function vipChannelAccess(req,res,next){
+  try{
+    const accessToken=String(req.headers["x-vip-channel-token"]||"");
+    const payload=jwt.verify(accessToken,JWT_SECRET);
+    if(payload.scope!=="vip-channel"||String(payload.id)!==String(req.auth?.id))throw new Error("Invalid VIP Channel access");
+    req.vipChannelAccess=payload;
+    next();
+  }catch{return res.status(401).json({success:false,message:"VIP Channel lock expired. Please unlock again."});}
+}
+function vipChannelUserOnly(req,res){
+  if(req.auth?.role!=="user"){res.status(403).json({success:false,message:"Platform user account required"});return false;}
+  return true;
+}
+function issueVipChannelToken(user){
+  return jwt.sign({id:String(user._id),scope:"vip-channel"},JWT_SECRET,{expiresIn:"30m"});
+}
+app.get("/api/me/vip-channel/status",auth,async(req,res)=>{
+  if(!vipChannelUserOnly(req,res))return;
+  try{
+    const user=await User.findById(req.auth.id).select("+vipChannelPinHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    res.set("Cache-Control","no-store");
+    res.json({success:true,hasPin:Boolean(user.vipChannelPinHash)});
+  }catch(e){console.error("VIP Channel lock status",e);res.status(500).json({success:false,message:"Unable to check VIP Channel lock"});}
+});
+app.post("/api/me/vip-channel/pin/setup",auth,async(req,res)=>{
+  if(!vipChannelUserOnly(req,res))return;
+  try{
+    const pin=String(req.body?.pin||"");
+    if(!/^\d{6}$/.test(pin))return res.status(400).json({success:false,message:"PIN must contain exactly 6 digits"});
+    const user=await User.findById(req.auth.id).select("+vipChannelPinHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(user.vipChannelPinHash)return res.status(409).json({success:false,message:"A VIP Channel lock is already set. Enter your PIN to unlock."});
+    const pinHash=hashPassword(pin);
+    const saved=await User.updateOne(
+      {_id:user._id,$or:[{vipChannelPinHash:{$exists:false}},{vipChannelPinHash:null},{vipChannelPinHash:""}]},
+      {$set:{vipChannelPinHash:pinHash,vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:null}}
+    );
+    if(!saved.modifiedCount)return res.status(409).json({success:false,message:"A VIP Channel lock is already set. Enter your PIN to unlock."});
+    res.set("Cache-Control","no-store");
+    res.json({success:true,channelToken:issueVipChannelToken(user),expiresIn:1800,message:"VIP Channel lock saved"});
+  }catch(e){console.error("VIP Channel PIN setup",e);res.status(500).json({success:false,message:"Unable to save VIP Channel lock"});}
+});
+app.post("/api/me/vip-channel/pin/verify",auth,async(req,res)=>{
+  if(!vipChannelUserOnly(req,res))return;
+  try{
+    const pin=String(req.body?.pin||"");
+    if(!/^\d{6}$/.test(pin))return res.status(400).json({success:false,message:"Enter your 6-digit PIN"});
+    const user=await User.findById(req.auth.id).select("+vipChannelPinHash");
+    if(!user)return res.status(404).json({success:false,message:"User not found"});
+    if(!user.vipChannelPinHash)return res.status(409).json({success:false,message:"Set a VIP Channel lock first"});
+    const now=new Date(),blockedUntil=user.vipChannelPinBlockedUntil?new Date(user.vipChannelPinBlockedUntil):null;
+    if(blockedUntil&&blockedUntil.getTime()>now.getTime())return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again later.",retryAfterSeconds:Math.ceil((blockedUntil.getTime()-now.getTime())/1000)});
+    if(!verifyPassword(pin,user.vipChannelPinHash)){
+      const failedUser=await User.findByIdAndUpdate(user._id,{$inc:{vipChannelPinFailedAttempts:1}},{new:true}).select("vipChannelPinFailedAttempts vipChannelPinBlockedUntil");
+      if(!failedUser)return res.status(404).json({success:false,message:"User not found"});
+      const failed=Number(failedUser.vipChannelPinFailedAttempts||0);
+      const concurrentBlock=failedUser.vipChannelPinBlockedUntil?new Date(failedUser.vipChannelPinBlockedUntil):null;
+      if(failed>=5){
+        const lockUntil=new Date(Date.now()+15*60*1000);
+        await User.updateOne({_id:user._id},{$set:{vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:lockUntil}});
+        return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again in 15 minutes.",retryAfterSeconds:900});
+      }
+      if(concurrentBlock&&concurrentBlock.getTime()>Date.now())return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again later.",retryAfterSeconds:Math.ceil((concurrentBlock.getTime()-Date.now())/1000)});
+      return res.status(401).json({success:false,message:"Incorrect PIN. Please try again.",remainingAttempts:Math.max(0,5-failed)});
+    }
+    await User.updateOne({_id:user._id},{$set:{vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:null}});
+    res.set("Cache-Control","no-store");
+    res.json({success:true,channelToken:issueVipChannelToken(user),expiresIn:1800,message:"VIP Channel unlocked"});
+  }catch(e){console.error("VIP Channel PIN verification",e);res.status(500).json({success:false,message:"Unable to verify VIP Channel PIN"});}
+});
+app.get("/api/me/vip-channel/content",auth,vipChannelAccess,async(req,res)=>{
+  if(!vipChannelUserOnly(req,res))return;
+  try{
+    const items=await VipChannelMedia.find({active:true}).sort({type:1,sortOrder:1,createdAt:-1}).lean();
+    res.set("Cache-Control","no-store");
+    res.json({success:true,items:items.map(cleanVipChannelMedia)});
+  }catch(e){console.error("VIP Channel content",e);res.status(500).json({success:false,message:"Unable to load VIP Channel content"});}
+});
+
 app.get("/api/me/announcements",auth,async(req,res)=>{
   try{
     const rows=await Announcement.find({
