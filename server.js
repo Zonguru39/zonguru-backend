@@ -275,65 +275,6 @@ app.get("/",(req,res)=>res.json({success:true,service:"Zonguru Backend",status:"
 app.get("/api/public/events",async(req,res)=>{try{const setting=await PlatformSetting.findOne({key:"events_content"}).lean();res.set("Cache-Control","no-store");const v=setting?.value||{};res.json({success:true,event:{title:String(v.title||"Salary List"),text:String(v.text||""),image:String(v.image||""),updatedAt:setting?.updatedAt||null}})}catch(e){res.status(500).json({success:false,message:"Failed to load Events content"})}});
 app.put("/api/internal/events",async(req,res)=>{try{const key=String(req.headers["x-deposit-settings-key"]||"");if(!process.env.DEPOSIT_SETTINGS_KEY||key!==process.env.DEPOSIT_SETTINGS_KEY)return res.status(401).json({success:false,message:"Unauthorized"});const title=String(req.body?.title||"").trim(),text=String(req.body?.text||"").trim(),image=String(req.body?.image||"").trim();if(title.length>120||text.length>8000)return res.status(400).json({success:false,message:"Title or event text is too long"});if(image&&(!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(image)||image.length>14000000))return res.status(400).json({success:false,message:"Image must be PNG, JPG, WEBP or GIF and no larger than 10 MB"});const setting=await PlatformSetting.findOneAndUpdate({key:"events_content"},{$set:{value:{title,text,image},updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({success:true,event:setting.value,message:"Events content saved"})}catch(e){console.error("Save Events content:",e.message);res.status(500).json({success:false,message:"Failed to save Events content"})}});
 
-function internalVipChannelAuthorized(req){
-  const supplied=String(req.headers["x-deposit-settings-key"]||"");
-  return Boolean(process.env.DEPOSIT_SETTINGS_KEY&&supplied===process.env.DEPOSIT_SETTINGS_KEY);
-}
-function cleanVipChannelMedia(item){
-  return {id:String(item._id),type:item.type,title:item.title||"",caption:item.caption||"",image:item.image||"",sortOrder:Number(item.sortOrder||0),active:item.active!==false,createdAt:item.createdAt||null,updatedAt:item.updatedAt||null};
-}
-function validateVipChannelImage(image){
-  return typeof image==="string"&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(image)&&image.length<=500000;
-}
-app.get("/api/internal/vip-channel",async(req,res)=>{
-  if(!internalVipChannelAuthorized(req))return res.status(401).json({success:false,message:"Unauthorized"});
-  try{
-    const items=await VipChannelMedia.find().sort({type:1,sortOrder:1,createdAt:-1}).lean();
-    res.set("Cache-Control","no-store");
-    res.json({success:true,items:items.map(cleanVipChannelMedia)});
-  }catch(e){console.error("Load VIP Channel media",e);res.status(500).json({success:false,message:"Unable to load VIP Channel content"});}
-});
-app.post("/api/internal/vip-channel/items",async(req,res)=>{
-  if(!internalVipChannelAuthorized(req))return res.status(401).json({success:false,message:"Unauthorized"});
-  try{
-    const type=String(req.body?.type||"gallery"),title=String(req.body?.title||"").trim(),caption=String(req.body?.caption||"").trim(),image=String(req.body?.image||"");
-    const sortOrder=Number(req.body?.sortOrder||0),active=req.body?.active!==false;
-    if(!["banner","entry","gallery"].includes(type))return res.status(400).json({success:false,message:"Choose a valid content type"});
-    if(!title||title.length>120||caption.length>240)return res.status(400).json({success:false,message:"Title is required and text must be within the allowed length"});
-    if(!validateVipChannelImage(image))return res.status(400).json({success:false,message:"Image must be PNG, JPG or WEBP and no larger than 500 KB after compression"});
-    if(!Number.isInteger(sortOrder)||sortOrder<0||sortOrder>9999)return res.status(400).json({success:false,message:"Sort order must be between 0 and 9999"});
-    const count=await VipChannelMedia.countDocuments();
-    if(count>=24)return res.status(400).json({success:false,message:"VIP Channel supports up to 24 images"});
-    const item=await VipChannelMedia.create({type,title,caption,image,sortOrder,active,updatedAt:new Date()});
-    res.json({success:true,item:cleanVipChannelMedia(item.toObject()),message:"VIP Channel image saved"});
-  }catch(e){console.error("Create VIP Channel media",e);res.status(500).json({success:false,message:"Unable to save VIP Channel image"});}
-});
-app.put("/api/internal/vip-channel/items/:id",async(req,res)=>{
-  if(!internalVipChannelAuthorized(req))return res.status(401).json({success:false,message:"Unauthorized"});
-  try{
-    if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid image id"});
-    const update={updatedAt:new Date()};
-    if(req.body?.type!==undefined){const type=String(req.body.type);if(!["banner","entry","gallery"].includes(type))return res.status(400).json({success:false,message:"Choose a valid content type"});update.type=type;}
-    if(req.body?.title!==undefined){const title=String(req.body.title||"").trim();if(!title||title.length>120)return res.status(400).json({success:false,message:"Title is required and must be 120 characters or fewer"});update.title=title;}
-    if(req.body?.caption!==undefined){const caption=String(req.body.caption||"").trim();if(caption.length>240)return res.status(400).json({success:false,message:"Caption must be 240 characters or fewer"});update.caption=caption;}
-    if(req.body?.image!==undefined){const image=String(req.body.image||"");if(!validateVipChannelImage(image))return res.status(400).json({success:false,message:"Image must be PNG, JPG or WEBP and no larger than 500 KB after compression"});update.image=image;}
-    if(req.body?.sortOrder!==undefined){const sortOrder=Number(req.body.sortOrder);if(!Number.isInteger(sortOrder)||sortOrder<0||sortOrder>9999)return res.status(400).json({success:false,message:"Sort order must be between 0 and 9999"});update.sortOrder=sortOrder;}
-    if(req.body?.active!==undefined)update.active=req.body.active===true||String(req.body.active).toLowerCase()==="true";
-    const item=await VipChannelMedia.findByIdAndUpdate(req.params.id,{$set:update},{new:true,runValidators:true});
-    if(!item)return res.status(404).json({success:false,message:"VIP Channel image not found"});
-    res.json({success:true,item:cleanVipChannelMedia(item.toObject()),message:"VIP Channel image updated"});
-  }catch(e){console.error("Update VIP Channel media",e);res.status(500).json({success:false,message:"Unable to update VIP Channel image"});}
-});
-app.delete("/api/internal/vip-channel/items/:id",async(req,res)=>{
-  if(!internalVipChannelAuthorized(req))return res.status(401).json({success:false,message:"Unauthorized"});
-  try{
-    if(!mongoose.isValidObjectId(req.params.id))return res.status(400).json({success:false,message:"Invalid image id"});
-    const item=await VipChannelMedia.findByIdAndDelete(req.params.id);
-    if(!item)return res.status(404).json({success:false,message:"VIP Channel image not found"});
-    res.json({success:true,deleted:true});
-  }catch(e){console.error("Delete VIP Channel media",e);res.status(500).json({success:false,message:"Unable to delete VIP Channel image"});}
-});
-
 app.get("/api/public/deposit-addresses",async(req,res)=>{
   try{
     const setting=await PlatformSetting.findOne({key:"deposit_addresses"}).lean();
