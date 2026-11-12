@@ -247,6 +247,9 @@ const VipChannelMediaSchema=new mongoose.Schema({
   updatedAt:{type:Date,default:Date.now}
 },{collection:"vip_channel_media"});
 const VipChannelMedia=mongoose.model("VipChannelMedia",VipChannelMediaSchema);
+function cleanVipChannelMedia(item){
+  return {id:String(item._id),type:item.type,title:item.title||"",caption:item.caption||"",image:item.image||"",sortOrder:Number(item.sortOrder||0),active:item.active!==false,createdAt:item.createdAt||null,updatedAt:item.updatedAt||null};
+}
 
 
 
