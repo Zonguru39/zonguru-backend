@@ -610,9 +610,12 @@ app.post("/api/me/vip-channel/pin/setup",auth,async(req,res)=>{
     const user=await User.findById(req.auth.id).select("+vipChannelPinHash");
     if(!user)return res.status(404).json({success:false,message:"User not found"});
     if(user.vipChannelPinHash)return res.status(409).json({success:false,message:"A VIP Channel lock is already set. Enter your PIN to unlock."});
-    user.vipChannelPinHash=hashPassword(pin);
-    user.vipChannelPinFailedAttempts=0;user.vipChannelPinBlockedUntil=null;
-    await user.save();
+    const pinHash=hashPassword(pin);
+    const saved=await User.updateOne(
+      {_id:user._id,$or:[{vipChannelPinHash:{$exists:false}},{vipChannelPinHash:null},{vipChannelPinHash:""}]},
+      {$set:{vipChannelPinHash:pinHash,vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:null}}
+    );
+    if(!saved.modifiedCount)return res.status(409).json({success:false,message:"A VIP Channel lock is already set. Enter your PIN to unlock."});
     res.set("Cache-Control","no-store");
     res.json({success:true,channelToken:issueVipChannelToken(user),expiresIn:1800,message:"VIP Channel lock saved"});
   }catch(e){console.error("VIP Channel PIN setup",e);res.status(500).json({success:false,message:"Unable to save VIP Channel lock"});}
@@ -628,12 +631,19 @@ app.post("/api/me/vip-channel/pin/verify",auth,async(req,res)=>{
     const now=new Date(),blockedUntil=user.vipChannelPinBlockedUntil?new Date(user.vipChannelPinBlockedUntil):null;
     if(blockedUntil&&blockedUntil.getTime()>now.getTime())return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again later.",retryAfterSeconds:Math.ceil((blockedUntil.getTime()-now.getTime())/1000)});
     if(!verifyPassword(pin,user.vipChannelPinHash)){
-      const failed=Number(user.vipChannelPinFailedAttempts||0)+1;
-      if(failed>=5){user.vipChannelPinFailedAttempts=0;user.vipChannelPinBlockedUntil=new Date(now.getTime()+15*60*1000);await user.save();return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again in 15 minutes.",retryAfterSeconds:900});}
-      user.vipChannelPinFailedAttempts=failed;await user.save();
-      return res.status(401).json({success:false,message:"Incorrect PIN. Please try again.",remainingAttempts:5-failed});
+      const failedUser=await User.findByIdAndUpdate(user._id,{$inc:{vipChannelPinFailedAttempts:1}},{new:true}).select("vipChannelPinFailedAttempts vipChannelPinBlockedUntil");
+      if(!failedUser)return res.status(404).json({success:false,message:"User not found"});
+      const failed=Number(failedUser.vipChannelPinFailedAttempts||0);
+      const concurrentBlock=failedUser.vipChannelPinBlockedUntil?new Date(failedUser.vipChannelPinBlockedUntil):null;
+      if(failed>=5){
+        const lockUntil=new Date(Date.now()+15*60*1000);
+        await User.updateOne({_id:user._id},{$set:{vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:lockUntil}});
+        return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again in 15 minutes.",retryAfterSeconds:900});
+      }
+      if(concurrentBlock&&concurrentBlock.getTime()>Date.now())return res.status(429).json({success:false,message:"Too many incorrect PIN attempts. Try again later.",retryAfterSeconds:Math.ceil((concurrentBlock.getTime()-Date.now())/1000)});
+      return res.status(401).json({success:false,message:"Incorrect PIN. Please try again.",remainingAttempts:Math.max(0,5-failed)});
     }
-    user.vipChannelPinFailedAttempts=0;user.vipChannelPinBlockedUntil=null;await user.save();
+    await User.updateOne({_id:user._id},{$set:{vipChannelPinFailedAttempts:0,vipChannelPinBlockedUntil:null}});
     res.set("Cache-Control","no-store");
     res.json({success:true,channelToken:issueVipChannelToken(user),expiresIn:1800,message:"VIP Channel unlocked"});
   }catch(e){console.error("VIP Channel PIN verification",e);res.status(500).json({success:false,message:"Unable to verify VIP Channel PIN"});}
